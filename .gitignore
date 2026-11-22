@@ -1,0 +1,72 @@
+# ===== 构建产物与二进制（不进仓库）=====
+_build/
+_dl/
+_mac/
+out/
+node_modules/
+
+# ===== 日志与临时文件 =====
+*.log
+_nsis_*
+_tmp/
+
+# ===== 根目录过程产物（补丁脚本/截图/临时探针）=====
+_*.py
+_patch*/
+_*.txt
+ui-*.png
+ui_*.png
+user-shot-*.png
+wysiwyg_*.png
+uni_probe*.js
+uni_probe*.pdf
+
+# ===== 测试目录：只保留测试脚本与小型测试 PDF =====
+_test/_out*/
+_test/_runout/
+_test/out*/
+_test/profile*/
+_test/*.log
+_test/*.png
+_test/*.txt
+_test/*.html
+_test/_*.py
+_test/_*.js
+_test/clip2.png
+
+# 含本机真实文件路径（保单号/车牌）的探针，不进公开仓库
+_test/cmp_pdf_text.js
+_test/dump_fonts.js
+_test/probe_html_text.js
+_test/probe_real_policy_html.js
+_test/probe_policy_edit_a.js
+_test/probe_policy_edit_b.js
+_test/probe_policy_export.js
+_test/probe_policy_verify.js
+_test/probe_scan_mix.js
+_test/gen_layout_doc.js
+_test/gen_zh_probe.js
+_test/probe_badtext.js
+_test/probe_scale.js
+_test/probe_scan_para.js
+_test/probe_scan_size.js
+_test/probe_shot_bad.js
+_test/probe_shot_click.js
+_test/probe_shot_size.js
+_test/probe_size.js
+_test/probe_suspect.js
+_test/probe_tiny.js
+
+# 从真实保单裁出的测试 PDF（内容流压缩，明文扫不出但源自真实单据）
+_test/policy_p1.pdf
+_test/policy_edited_p1.pdf
+
+# ===== vendor 旧版本备份 =====
+renderer/vendor/_old311/
+
+# ===== 专有字体（微软雅黑，不可再分发，运行前自行放置）=====
+renderer/vendor/cjk.ttf
+
+# ===== 系统文件 =====
+Thumbs.db
+.DS_Store

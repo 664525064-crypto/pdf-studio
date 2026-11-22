@@ -1,0 +1,20 @@
+const fs=require('fs');
+const PORT=9234;
+const b64=n=>fs.readFileSync('_test/'+n).toString('base64');
+(async()=>{
+ const list=await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+ const page=list.find(t=>t.type==='page');
+ const ws=new WebSocket(page.webSocketDebuggerUrl); await new Promise(r=>ws.onopen=r);
+ let seq=0; const pend=new Map();
+ ws.onmessage=e=>{const m=JSON.parse(e.data); if(m.id&&pend.has(m.id)){pend.get(m.id)(m);pend.delete(m.id);} };
+ const send=(method,params,to=30000)=>new Promise((res,rej)=>{const id=++seq;pend.set(id,res);ws.send(JSON.stringify({id,method,params:params||{}}));setTimeout(()=>{if(pend.has(id)){pend.delete(id);rej(new Error('timeout '+method));}},to)});
+ const ev=async(expr,to=30000)=>{try{const m=await send('Runtime.evaluate',{expression:expr,awaitPromise:true,returnByValue:true},to); if(m.result.exceptionDetails) return {ERR:(m.result.exceptionDetails.exception||{}).description||m.result.exceptionDetails.text}; return m.result.result.value;}catch(e){return {TO:e.message};}};
+ await ev(`window.__E2E__=1`);
+ console.log('pre', JSON.stringify(await ev(`({tool:__PS.state.tool,busy:__PS.state.busy,fl:(__PS.state.fileList||[]).length})`)));
+ const bA=b64('test-a.pdf'), bB=b64('test-b.pdf');
+ console.log('setup', JSON.stringify(await ev(`(()=>{window.__PS_SAVED__.length=0; __PS.selectTool('merge'); return {tool:__PS.state.tool, opts:!!document.getElementById('f_mode')};})()`)));
+ console.log('add', JSON.stringify(await ev(`(async()=>{await __PS.testAddFile('test-a.pdf','${bA}');await __PS.testAddFile('test-b.pdf','${bB}');return (__PS.state.fileList||[]).map(f=>f.name);})()`,30000)));
+ console.log('run', JSON.stringify(await ev(`(async()=>{ const t0=Date.now(); const r=await Promise.race([__PS.testRun().then(()=>'done'),new Promise(z=>setTimeout(()=>z('HANG'),15000))]); return {r,ms:Date.now()-t0,status:document.getElementById('status').textContent,busy:__PS.state.busy,saved:window.__PS_SAVED__.length}; })()`,40000)));
+ console.log('saved', JSON.stringify(await ev(`__PS_SAVED__.map(f=>f.name+':'+f.bytes.length)`)));
+ ws.close(); process.exit(0);
+})().catch(e=>{console.log('EX',e.message);process.exit(1)});
