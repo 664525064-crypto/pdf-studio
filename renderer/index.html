@@ -2778,7 +2778,23 @@ function edParaInfo(pi){
   dys.sort((a,b)=>a-b);
   const lead=dys.length?dys[Math.floor(dys.length/2)]:size*1.55;
   const indent=Math.max(0, Math.min(4, Math.round((ls[0].x-x0)/size*2)/2));
-  return { idxs:g, lines:ls, x0, x1, w:Math.max(4,x1-x0), size, lead, indent,
+  /* 段落对齐几何判别：多行的「行中心彼此相同」就是居中段（标题类），左边缘彼此相同是左对齐，
+     右边缘彼此相同是右对齐；判别不出保持 null（按原来的左起画）。
+     居中段改字重排时必须按原段中心继续居中，不然第二行会贴到段左缘（保单标题实测）。 */
+  let alg=null;
+  if(ls.length>=2){
+    const tol=Math.max(2, size*0.22);
+    const ws=ls.map(l=>Math.max(1,((l.x2!=null)?l.x2:(l.x+(l.w||0)))-l.x));
+    const cx=ls.map((l,i)=>l.x+ws[i]/2);
+    const cm=cx.reduce((a,b)=>a+b,0)/cx.length;
+    if(Math.max(...cx.map(v=>Math.abs(v-cm)))<=tol && (Math.max(...ws)-Math.min(...ws))>tol*2) alg='center';
+    else if((Math.max(...ls.map(l=>l.x))-Math.min(...ls.map(l=>l.x)))<=tol) alg='left';
+    else{
+      const rx=ls.map((l,i)=>l.x+ws[i]);
+      if((Math.max(...rx)-Math.min(...rx))<=tol) alg='right';
+    }
+  }
+  return { idxs:g, lines:ls, x0, x1, w:Math.max(4,x1-x0), size, lead, indent, align:alg,
            y0:ls[0].y, yEnd:ls[ls.length-1].y, n:ls.length, text:ls.map(l=>l.text).join('\n') };
 }
 /* 段首上方还剩多少空地：段落改长时优先往上长，别去压下面的内容 */
@@ -2922,9 +2938,9 @@ function edApplyParaText(pi, newText){
   if(flat(newText)===flat(P.text)) return false;
   const L0=P.lines[0];
   const rec={ page:ED.page, multi:true, x:P.x0, xEnd:P.x1, y:P.y0, yEnd:P.yEnd, w:edAvailW(P), h:P.size,
-              nOld:P.n, lead:P.lead, indent:P.indent, old:P.text, text:newText, color:edPenColor(L0), size:P.size,
+              nOld:P.n, lead:P.lead, indent:(P.align==='center'?0:P.indent), old:P.text, text:newText, color:edPenColor(L0), size:P.size,
               inkH:L0.inkH||null, fam:edFam(L0), bg:L0.ocr?edBgSample(edBox(L0)):null, gapUp:edGapUp(P),
-              ocr:!!L0.ocr, autoFam:true, autoSrc:L0.srcFont||L0.fam||null, autoSize:false, bold:!!L0.bold, italic:false, align:null };
+              ocr:!!L0.ocr, autoFam:true, autoSrc:L0.srcFont||L0.fam||null, autoSize:false, bold:!!L0.bold, italic:false, align:(P.align||null) };
   edAttachReflow(P, rec);
   ED.edits=ED.edits.filter(e=>!(e.page===ED.page &&
       (e.multi ? (Math.abs(e.y-P.y0)<1.6 && Math.abs(e.x-P.x0)<1.6)
@@ -3216,6 +3232,25 @@ function wrapPara(text, font, size, maxW, indentCh){
   });
   return out;
 }  // OCR 行给的是字形外框高度
+/* 优先保留原行断点：新文字能按「原各行」依序匹配上（允许在字间插入新字），
+   就按原行边界断行——往标题里插几个字，标题的行结构不变（保单标题实测）；
+   匹配不上（整行删了/改乱了）或某行排不下，回退贪心断行 */
+function edWrapKeepRows(oldText, newText, measure, maxW, indentCh){
+  const oldRows=String(oldText||'').split('\n').map(s=>s.replace(/\s+$/,'')).filter(s=>s.length);
+  if(oldRows.length<2) return null;
+  const t=String(newText||'');
+  let pos=0; const segs=[];
+  for(const target of oldRows){
+    let i=pos, j=0;
+    while(j<target.length && i<t.length){ if(t[i]===target[j]) j++; i++; }
+    if(j<target.length) return null;
+    segs.push(t.slice(pos, i));
+    pos=i;
+  }
+  if(pos<t.length) segs[segs.length-1]+=t.slice(pos);
+  for(const s of segs){ const w=(measure(s)||0); if(w>maxW+2) return null; }
+  return segs.map((s,k)=>({t:s, ind:k===0?(indentCh||0):0}));
+}
 /* 当前用哪种中文字体：用户手动选了就用选的，否则跟随原文
    （先看这一页 PDF 里真实写的字体名，再看 pdf.js 给的 CSS 族名，最后用整份文档主字体） */
 function edFam(L){
@@ -3300,7 +3335,7 @@ function edPaintCanvas(){
          编辑时看到的就是保存后的样子，不再浮白框 */
       const size=Math.max(4, e.size||10);
       const lead=Math.max(size*1.02, e.lead||size*1.55);
-      const rows=e.text?wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0):[];
+      const rows=e.text?(edWrapKeepRows(e.old, e.text, s=>measureCss(s, famCss(fam), size), e.w, e.indent||0)||wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0)):[];
       const hasRf=(e.reflow && e.reflow.below && e.reflow.below.length);
       const delta=hasRf?(rows.length-(e.nOld||1))*lead+(e.gapAfter||0):0;
       const shift=hasRf?0:Math.max(0, Math.min((rows.length-(e.nOld||1))*lead, (e.gapUp||0)*0.95));
@@ -3320,11 +3355,16 @@ function edPaintCanvas(){
         if(!row.t) continue;
         rowsW=Math.max(rowsW, measureCss(row.t, famCss(fam), size)+(row.ind||0)*size);
       }
-      const coverW=Math.min(e.w+12, Math.max((e.xEnd!=null?e.xEnd:e.x+e.w)-e.x+12, rowsW+12));
+      const spanR=(e.xEnd!=null?e.xEnd:e.x+e.w);
+      let coverX=e.x-6, coverW=Math.min(e.w+12, Math.max(spanR-e.x+12, rowsW+12));
+      if(e.align==='center'){
+        const anchor=(e.x+spanR)/2, half=Math.max((spanR-e.x)/2, rowsW/2);
+        coverX=anchor-half-6; coverW=half*2+12;
+      }
       ctx.fillStyle=bg;
       /* Y(top) 是顶部像素、Y(bot) 是底部像素：原点取顶 + 正高度才能盖住段身
          （原来写成 Y(top)-Y(bot) 负高度，白块盖到段落上方去了，原文字全留着） */
-      ctx.fillRect(X(e.x-6), Y(top), X(Math.max(8,coverW)), Y(bot)-Y(top));
+      ctx.fillRect(X(coverX), Y(top), X(Math.max(8,coverW)), Y(bot)-Y(top));
       if(hasRf && Math.abs(delta)>0.4){
         for(const b of e.reflow.below){
           const bs=Math.max(4, b.size||10);
@@ -3360,7 +3400,7 @@ function edPaintCanvas(){
     ctx.textBaseline='alphabetic';
     if(e.multi){
       const size=Math.max(4, e.size||10);
-      const pv=e._pv||{rows:e.text?wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0):[], delta:0, yStart:e.y, lead:Math.max(size*1.02, e.lead||size*1.55)};
+      const pv=e._pv||{rows:e.text?(edWrapKeepRows(e.old, e.text, s=>measureCss(s, famCss(fam), size), e.w, e.indent||0)||wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0)):[], delta:0, yStart:e.y, lead:Math.max(size*1.02, e.lead||size*1.55)};
       ctx.fillStyle=e.color||'#000000';
       ctx.font=(e.bold?'bold ':'')+(e.italic?'italic ':'')+(size*k)+'px '+famCss(fam);
       const mvx=e.mvx||0, mvy=e.mvy||0;
@@ -3369,7 +3409,8 @@ function edPaintCanvas(){
           let xo=0;
           if(e.align==='center'||e.align==='right'){
             const w=measureCss(pv.rows[kk].t, famCss(fam), size);
-            xo=e.align==='center'?Math.max(0,(e.w-w)/2):Math.max(0,e.w-w);
+            if(e.align==='center') xo=((e.x+((e.xEnd!=null)?e.xEnd:e.x+e.w))/2)-e.x-w/2;
+            else xo=Math.max(0,((e.xEnd!=null)?e.xEnd:e.x+e.w)-e.x-w);
           }
           ctx.fillText(pv.rows[kk].t, X(e.x+mvx+(pv.rows[kk].ind||0)*size+xo), Y(pv.yStart+mvy-kk*pv.lead));
         }
@@ -3683,6 +3724,18 @@ function edStartPara(pi){
      "右边还有一大片空地，字却提前折行"（签单日期那行就是这么被憋折的）。
      单行字段放宽到页面右边界为止，多行段落本来就顶到右边界、宽度不变 */
   const avW=edAvailW(P);
+  const boxAlign=(prev&&prev.align)||(P.align||null);
+  if(boxAlign==='center'){
+    /* 居中段：编辑框绕原段中心对称摆放，框内文字也居中——所见即所得 */
+    const anchor=(P.x0+P.x1)/2;
+    d.style.left = Math.max(0,(anchor-avW/2-6)*s)+'px';
+    d.style.textAlign='center';
+  }else if(boxAlign==='right'){
+    d.style.left = Math.max(0,(P.x1+6-avW-12)*s)+'px';
+    d.style.textAlign='right';
+  }else{
+    d.style.left = Math.max(0,(P.x0-6)*s)+'px';
+  }
   d.style.width = Math.max(60,(avW+12)*s)+'px';
   /* +8：补 padding/border 与行高舍入，不然内容只超 1px 也会挂出滚动条 */
   const needH=((P.n-1)*lh + em*1.34 + 8);
@@ -3700,14 +3753,14 @@ function edStartPara(pi){
   if(boldAuto0) d.style.fontWeight = 'bold';
   d.style.color = (prev&&prev.color)||edPenColor(L0);
   d.style.background = (prev&&prev.bg)||(L0.ocr ? edBgSample(edBox(L0)) : '#ffffff');
-  d.style.textIndent = (P.indent*em)+'px';   // 首行缩进两字，跟原文一致
+  if(boxAlign!=='center') d.style.textIndent = (P.indent*em)+'px';   // 首行缩进两字，跟原文一致（居中段的"缩进"是居中的几何副产物，不能真缩进）
   $('edLayer').appendChild(d);
   ED.inline=d;
   d.onmousedown=ev=>ev.stopPropagation();
   edMakeStretch(d);   // 右下角可自由拉伸（拉过之后 fit 不再自动改尺寸）
   d.dataset.fsize=(prev&&prev.size)||P.size;
   d.dataset.fcolor=d.style.color;
-  d.dataset.fa=(prev&&prev.align)||'left';
+  d.dataset.fa=boxAlign||'left';
   d.dataset.fb=boldAuto0?'1':'';
   d.dataset.fi=(prev&&prev.italic)?'1':'';
   d.dataset.flh=(prev&&prev.lh)?prev.lh:'';
@@ -3804,11 +3857,14 @@ function edCommitPara(d){
     if(prev){ ED.edits=ED.edits.filter(e=>e!==prev); edSyncSide(); }
     edPaintLayer(); return;
   }
+  /* 有效对齐：用户显式选过（faSet）听用户的；否则沿用段落几何判别的对齐 */
+  const effAlign=d.dataset.faSet==='1' ? (d.dataset.fa||'left') : ((P.align||d.dataset.fa||'left'));
   const rec={ page:ED.page, multi:true, x:P.x0, xEnd:P.x1, y:P.y0, yEnd:P.yEnd, w:edAvailW(P), h:P.size,
-              nOld:P.n, lead:P.lead, indent:P.indent, old:P.text, text, color, size:P.size, inkH:P.lines[0].inkH||null,
+              nOld:P.n, lead:P.lead, indent:(effAlign==='center'?0:P.indent), old:P.text, text, color, size:P.size, inkH:P.lines[0].inkH||null,
               fam:edFam(P.lines[0]), bg:P.lines[0].ocr?edBgSample(edBox(P.lines[0])):null,
               gapUp:edGapUp(P), ocr:!!P.lines[0].ocr, autoFam:true, autoSrc:P.lines[0].srcFont||P.lines[0].fam||null, autoSize:false,
-              bold:(!!(P.lines[0]&&P.lines[0].bold))||d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null };
+              bold:(!!(P.lines[0]&&P.lines[0].bold))||d.dataset.fb==='1', italic:d.dataset.fi==='1',
+              align:(effAlign!=='left')?effAlign:null };
   const lhv=parseFloat(d.dataset.flh);
   if(lhv>0){ rec.lh=lhv; rec.lead=Math.round(rec.size*lhv*10)/10; }
   const gav=parseFloat(d.dataset.fga);
@@ -4279,7 +4335,7 @@ async function edSaveEdits(){
     const font=fontByFam[e.fam||regionFam]; if(!font) continue;
     const size=Math.max(4, e.size||10);
     const lead=Math.max(size*1.02, e.lead||size*1.55);
-    const rows=e.text?wrapPara(e.text, font, size, e.w, e.indent||0):[];
+    const rows=e.text?(edWrapKeepRows(e.old, e.text, s=>{ try{ return font.widthOfTextAtSize(s, size); }catch(err){ return s.length*size; } }, e.w, e.indent||0)||wrapPara(e.text, font, size, e.w, e.indent||0)):[];
     const grow=(rows.length-(e.nOld||1))*lead + (e.gapAfter||0);
     layout.set(e, { rows, shiftUp:0, delta:grow });
   }
@@ -4294,7 +4350,7 @@ async function edSaveEdits(){
       const lead=Math.max(size*1.02, e.lead||size*1.55);
       const bgc=e.bg?hex2rgb(e.bg):white;
       const lay=layout.get(e);
-      const rows=lay?lay.rows:(e.text?wrapPara(e.text, font, size, e.w, e.indent||0):[]);
+      const rows=lay?lay.rows:(e.text?(edWrapKeepRows(e.old, e.text, s=>{ try{ return font.widthOfTextAtSize(s, size); }catch(err){ return s.length*size; } }, e.w, e.indent||0)||wrapPara(e.text, font, size, e.w, e.indent||0)):[]);
       /* 变长了先往上长（借段前空白），上面没地方才往下压；挂了重排记录则下方让位 */
       const shift=lay?0:Math.max(0, Math.min((rows.length-(e.nOld||1))*lead, (e.gapUp||0)*0.95));
       const yStart=e.y+shift;
@@ -4318,8 +4374,16 @@ async function edSaveEdits(){
         let w=0; try{ w=font.widthOfTextAtSize(row.t, size); }catch(err){ w=row.t.length*size; }
         rowsW=Math.max(rowsW, w+(row.ind||0)*size);
       }
-      const coverW=Math.min(e.w+12, Math.max((e.xEnd!=null?e.xEnd:e.x+e.w)-e.x+12, rowsW+12));
-      page.drawRectangle({x:e.x-6, y:bot, width:Math.max(8,coverW), height:Math.max(size*0.8, top-bot), color:bgc});
+      const spanR=(e.xEnd!=null?e.xEnd:e.x+e.w);
+      /* 居中段：每行绕「原段中心」居中（行可以比原段宽，对称外溢）；
+         覆盖块也绕中心对称，左右都要盖住（原行 + 新行），不留残字 */
+      let coverX=e.x-6, coverW2=Math.min(e.w+12, Math.max(spanR-e.x+12, rowsW+12));
+      if(e.align==='center'){
+        const anchor=(e.x+spanR)/2, half=Math.max((spanR-e.x)/2, rowsW/2);
+        coverX=anchor-half-6;
+        coverW2=half*2+12;
+      }
+      page.drawRectangle({x:coverX, y:bot, width:Math.max(8,coverW2), height:Math.max(size*0.8, top-bot), color:bgc});
       const col=hex2rgb(e.color||'#000000');
       const mvx=e.mvx||0, mvy=e.mvy||0;
       for(let k=0;k<rows.length;k++){
@@ -4327,8 +4391,8 @@ async function edSaveEdits(){
           let xo=0;
           if(e.align==='center'||e.align==='right'){
             let w=0; try{ w=font.widthOfTextAtSize(rows[k].t, size); }catch(err){ w=rows[k].t.length*size; }
-            if(e.align==='center') xo=Math.max(0,(e.w-w)/2);
-            else xo=Math.max(0,e.w-w);
+            if(e.align==='center') xo=((e.x+spanR)/2)-e.x-w/2;   // 允许负值：新行比原段宽时左右对称外溢
+            else xo=Math.max(0,spanR-e.x-w);
           }
           drawStyledText(page, rows[k].t, {x:e.x+mvx+(rows[k].ind||0)*size+xo, y:yStart+mvy-k*lead,
                                            size, font, color:col, bold:e.bold, italic:e.italic});
@@ -4518,7 +4582,7 @@ function edFmtSet(t,o){
   if(o.color){ t.dataset.fcolor=o.color; t.style.color=o.color; }
   if(o.bold!=null){ t.dataset.fb=o.bold?'1':''; t.style.fontWeight=o.bold?'700':''; $('fmtB').classList.toggle('on',!!o.bold); }
   if(o.italic!=null){ t.dataset.fi=o.italic?'1':''; t.style.fontStyle=o.italic?'italic':''; $('fmtI').classList.toggle('on',!!o.italic); }
-  if(o.align){ t.dataset.fa=o.align; t.style.textAlign=o.align;
+  if(o.align){ t.dataset.fa=o.align; t.dataset.faSet='1'; t.style.textAlign=o.align;
     $('edFmt').querySelectorAll('[data-fa]').forEach(b=>b.classList.toggle('on',b.dataset.fa===o.align)); }
   if(o.lh){ t.dataset.flh=o.lh; t.style.lineHeight=(((parseFloat(t.dataset.fsize)||11)*sc)*o.lh)+'px'; $('fmtLh').value=o.lh; }
 }
