@@ -70,3 +70,6 @@ renderer/vendor/cjk.ttf
 # ===== 系统文件 =====
 Thumbs.db
 .DS_Store
+
+# ===== 本地助手（含本机代理配置，不进仓库）=====
+_push_github.sh
