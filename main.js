@@ -92,7 +92,7 @@ ipcMain.handle('ps-info', () => ({ outDir: OUT_DIR, platform: process.platform }
 const SYS_FONTS = {
   win32: {
     song: [['C:/Windows/Fonts/simsun.ttc', 0], ['C:/Windows/Fonts/simsun.ttf', 0], ['C:/Windows/Fonts/SURSONG.TTF', 0]],
-    hei: [['C:/Windows/Fonts/msyh.ttc', 0], ['C:/Windows/Fonts/msyh.ttf', 0], ['C:/Windows/Fonts/simhei.ttf', 0]],
+    hei: [['C:/Windows/Fonts/simhei.ttf', 0], ['C:/Windows/Fonts/msyh.ttc', 0], ['C:/Windows/Fonts/msyh.ttf', 0]],
     kai: [['C:/Windows/Fonts/simkai.ttf', 0], ['C:/Windows/Fonts/STKAITI.TTF', 0]],
     fang: [['C:/Windows/Fonts/simfang.ttf', 0], ['C:/Windows/Fonts/STFANGSO.TTF', 0]]
   },

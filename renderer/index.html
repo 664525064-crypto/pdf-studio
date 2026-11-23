@@ -813,7 +813,7 @@ async function openDoc(name, bytes){
     if(enc && st.tool!=='decrypt'){ setStatus('⚠️ 该 PDF 已加密，请先用左侧「解密 PDF」工具解除密码。','err'); setProg(null); return; }
     if(!enc && st.tool==='decrypt'){ setStatus('该文档没有密码，无需解密。','err'); setProg(null); return; }
     st.name=name; st.bytes=bytes; st.jsDoc=js;
-    st.docFam=null; st.pageFams=[];   // 换文档要重新判断原文用的中文字体
+    st.docFam=null; st.pageFams=[]; st._libDoc=null;   // 换文档要重新判断原文用的中文字体
     st.pageCount=js?js.numPages:0;
     st.sel=new Set(); if(js) for(let i=0;i<js.numPages;i++) st.sel.add(i);
     $('docname').textContent=name;
@@ -992,7 +992,7 @@ async function fontBytes(){
    找不到才退回内置字体。em 是"字形墨高 / 字号"的经验值，用来反推字号。 */
 const FONT_FAMS={
   song:{ label:'宋体',      css:'"SimSun","Songti SC","宋体",serif',                        em:0.90 },
-  hei: { label:'黑体',      css:'"Microsoft YaHei","PingFang SC","微软雅黑",sans-serif',      em:0.94 },
+  hei: { label:'黑体',      css:'"SimHei","黑体","Microsoft YaHei","PingFang SC",sans-serif',  em:0.94 },
   kai: { label:'楷体',      css:'"KaiTi","Kaiti SC","楷体",serif',                           em:0.88 },
   fang:{ label:'仿宋',      css:'"FangSong","STFangsong","仿宋",serif',                      em:0.88 }
 };
@@ -1752,10 +1752,154 @@ function pageFontNames(pdfDoc, idx){
   }catch(e){}
   return out;
 }
+/* ============ 行级字体名：粗体检测 ============
+   pdf.js 把内嵌子集字体的 css 族名统一报成 sans-serif，连宋/黑都分不出，
+   只有 PDF 字体资源里的真实 /BaseFont 才带粗体信息（SimSun-Bold 等）。
+   这里解析页面内容流（含 Form XObject），跟踪每个文字位点的 Tf 字体与 Tm/Td 位置，
+   按行 y 匹配出「这一行用的真实字体名」，名字带 Bold/Black/Heavy 即行级粗体。 */
+function edInflate(bytes){
+  return new Promise(async (res)=>{
+    try{
+      if(typeof DecompressionStream==='undefined') return res(bytes);
+      const out=new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+      res(out);
+    }catch(e){ res(bytes); }
+  });
+}
+function edFontKeyNorm(k){
+  const s=(k==null)?'':(k.encodedName!==undefined?String(k.encodedName):(k.asString?k.asString():String(k)));
+  return s.replace(/^[^\w]+/,'');
+}
+/* 极简 PDF 内容流词法：字符串/hex/名字/数字/定界符 → token 流 */
+function edLexStream(str){
+  const out=[]; let i=0; const n=str.length;
+  while(i<n){
+    const c=str[i];
+    if(c==='%'){ while(i<n && str[i]!=='\n' && str[i]!=='\r') i++; continue; }
+    if(c==='('){
+      let depth=1, j=i+1, s='';
+      while(j<n && depth>0){
+        const ch=str[j];
+        if(ch==='\\'){ s+=ch+(str[j+1]||''); j+=2; continue; }
+        if(ch==='(') depth++;
+        else if(ch===')'){ depth--; if(!depth) break; }
+        s+=ch; j++;
+      }
+      out.push({t:'s', v:s}); i=j+1; continue;
+    }
+    if(c==='<'){ const j=str.indexOf('>', i); out.push({t:'h', v:str.slice(i+1, j<0?n:j).replace(/\s+/g,'')}); i=(j<0?n:j)+1; continue; }
+    if(c==='['){ out.push({t:'['}); i++; continue; }
+    if(c===']'){ out.push({t:']'}); i++; continue; }
+    if(c==='/'){ let j=i+1; while(j<n && !/[\s\[\]<>(){}%]/.test(str[j])) j++; out.push({t:'n', v:str.slice(i+1, j)}); i=j; continue; }
+    if(/[A-Za-z'"*]/.test(c)){ let j=i+1; while(j<n && !/[\s\[\]<>(){}%]/.test(str[j])) j++; out.push({t:'n', v:str.slice(i, j)}); i=j; continue; }
+    if(/[-\d+.]/.test(c)){ let j=i+1; while(j<n && /[-\d.]+/.test(str[j])) j++; out.push({t:'num', v:parseFloat(str.slice(i,j))}); i=j; continue; }
+    i++;
+  }
+  return out;
+}
+/* 文本状态机：Tm、Td、TD、TL、T-star、Tf + Tj/TJ → [{y, font(资源键), count}] */
+function edScanTextOps(str){
+  const toks=edLexStream(str);
+  const ops=[]; let lm={x:0,y:0}, tl=0, font=null;
+  const stack=[];
+  for(let i=0;i<toks.length;i++){
+    const t=toks[i];
+    if(t.t!=='n') continue;
+    const op=t.v;
+    if(op==='Tf'){ const sz=toks[i-1], nm=toks[i-2]; font=(nm&&nm.t==='n')?nm.v:font; }
+    else if(op==='Tm'){ const f=toks[i-1]; if(f&&f.t==='num') lm={x:(toks[i-2]&&toks[i-2].v)||0, y:f.v}; }
+    else if(op==='Td'||op==='TD'){ const ty=toks[i-1]; if(ty&&ty.t==='num'){ lm.y+=ty.v; if(op==='TD') tl=-ty.v; } }
+    else if(op==='TL'){ const ty=toks[i-1]; if(ty&&ty.t==='num') tl=ty.v; }
+    else if(op==='T*'){ lm.y-=tl; }
+    else if(op==='q'){ stack.push({lm, tl, font}); }
+    else if(op==='Q'){ const s=stack.pop(); if(s){ lm=s.lm; tl=s.tl; font=s.font; } }
+    else if(op==='Tj'||op==="'"){
+      const s=toks[i-1];
+      const cnt=(s&&s.t==='h')?Math.ceil(s.v.length/2):(s&&s.t==='s'?s.v.length:1);
+      if(font) ops.push({y:lm.y, font, count:Math.max(1,cnt)});
+      if(op==="'") lm.y-=tl;
+    }
+    else if(op==='TJ'){
+      let cnt=0, j=i-1;
+      while(j>=0 && toks[j].t!==']'){ if(toks[j].t==='h') cnt+=toks[j].v.length/2; else if(toks[j].t==='s') cnt+=toks[j].v.length; j--; }
+      if(font) ops.push({y:lm.y, font, count:Math.max(1,cnt)});
+    }
+  }
+  return ops;
+}
+/* 页面所有文字位点（页面流 + Form XObject 递归），字体资源键已换算成 /BaseFont 名 */
+async function pageFontOps(doc, idx){
+  const PN=PDF_().PDFName, PD=PDF_().PDFDict;
+  const page=doc.getPages()[idx]; if(!page) return [];
+  const units=[];
+  const collect=(resNode, streams, depth)=>{
+    const map=new Map();
+    try{
+      const fonts=resNode && resNode.lookup(PN.of('Font'), PD);
+      if(fonts) for(const [k,v] of fonts.entries()){
+        const d=doc.context.lookup(v); let nm='';
+        try{ const bf=d && d.get && d.get(PN.of('BaseFont')); if(bf) nm=bf.asString?bf.asString():String(bf); }catch(e){}
+        if(!nm){ try{ const fd=doc.context.lookup(d.get(PN.of('FontDescriptor'))); const fn=fd&&fd.get(PN.of('FontName')); if(fn) nm=fn.asString?fn.asString():String(fn); }catch(e){} }
+        if(nm) map.set(edFontKeyNorm(k), nm);
+      }
+    }catch(e){}
+    for(const s of streams) units.push({s, map});
+    if(depth<3){
+      try{
+        const xo=resNode && resNode.lookup(PN.of('XObject'), PD);
+        if(xo) for(const [,v] of xo.entries()){
+          const st2=doc.context.lookup(v);
+          if(!st2 || !st2.getContents) continue;
+          let isForm=false; try{ const s2=st2.get(PN.of('Subtype')); isForm=s2&&String(s2).includes('Form'); }catch(e){}
+          if(isForm) collect(st2.get(PN.of('Resources')), [st2], depth+1);
+        }
+      }catch(e){}
+    }
+  };
+  try{
+    const cont=doc.context.lookup(page.node.Contents());
+    const cs=cont && cont.asArray ? cont.asArray().map(r=>doc.context.lookup(r)) : [cont];
+    collect(page.node.Resources(), cs.filter(Boolean), 0);
+  }catch(e){ return []; }
+  const ops=[];
+  for(const u of units){
+    try{
+      const raw=u.s.getContents(); if(!raw || !raw.length) continue;
+      const inf=await edInflate(raw); if(!inf || !inf.length) continue;
+      const txt=new TextDecoder('latin1').decode(inf);
+      for(const op of edScanTextOps(txt)) ops.push({y:op.y, count:op.count, font:u.map.get(edFontKeyNorm(op.font))||op.font});
+    }catch(e){}
+  }
+  return ops;
+}
+/* 行级挂真实字体名：按 y 匹配位点，字符数加权取众数 → L.srcFont / L.bold */
+async function attachLineFonts(doc, idx, lines){
+  try{
+    if(!lines || !lines.length) return;
+    if(!ED.fontOps) ED.fontOps={};
+    if(!ED.fontOps[idx]) ED.fontOps[idx]=await pageFontOps(doc, idx);
+    const ops=ED.fontOps[idx];
+    if(!ops.length) return;
+    for(const L of lines){
+      const tol=Math.max(1.5, (L.size||10)*0.7);
+      const cand=ops.filter(o=>Math.abs(o.y-L.y)<=tol);
+      if(!cand.length) continue;
+      const vote=new Map();
+      for(const o of cand) vote.set(o.font, (vote.get(o.font)||0)+o.count);
+      let bf='', bv=0;
+      for(const [f,c] of vote) if(c>bv){ bv=c; bf=f; }
+      if(bf){ L.srcFont=bf; if(/bold|black|heavy|dark|semib/i.test(bf)) L.bold=true; }
+    }
+  }catch(e){}
+}
+async function libDoc(){
+  if(!st._libDoc){ st._libDoc=await loadPdf(st.bytes); }
+  return st._libDoc;
+}
+
 /* 整份文档 + 每一页主要用哪种中文字体
    注意：内嵌子集字体的 CSS 族名经常被 pdf.js 统一报成 sans-serif，
-   所以「PDF 里真实写的字体名」优先于 CSS 族名，否则宋体文档会被当成黑体。 */
-async function docFamily(){
+   所以「PDF 里真实写的字体名」优先于 CSS 族名，否则宋体文档会被当成黑体。 */async function docFamily(){
   if(st.docFam) return st.docFam;
   let fam='song';
   const pageFams=[];
@@ -2253,7 +2397,7 @@ async function repair(v){
    改完「保存为新 PDF」时统一烧进 PDF（白块覆盖 + 重写文字），原文件不动。 */
 const ED = { open:false, page:0, zoom:1, scale:1, lines:[], edits:[], regions:[], news:[],
              paras:[], paraOf:[], vpW:0, vpH:0, drag:null, pick:null, pendBox:null,
-             ocrDone:{}, ocrBusy:null, ocrCache:{}, famMode:'auto', docFam:'song', seq:0,
+             ocrDone:{}, ocrBusy:null, ocrCache:{}, famMode:'auto', docFam:'song', seq:0, fontOps:{},
              pendNew:null, pendImg:null, pendImgSize:null,
              reflowOn:true, aiPi:null };
 const escHtml = s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -2263,7 +2407,7 @@ async function openEditor(pageIdx){
   if(!st.bytes || !st.jsDoc){ setStatus('请先打开要编辑的 PDF','err'); return; }
   if(ED.src !== st.bytes){ // 换了文档：识别缓存与修改记录都归零，避免串到上一个文件
     ED.src = st.bytes; ED.lines=[]; ED.edits=[]; ED.regions=[]; ED.paras=[]; ED.paraOf=[];
-    ED.ocrDone={}; ED.ocrCache={}; ED.ocrBusy=null; ED.docFam='song'; ED.news=[]; ED.seq=0;
+    ED.ocrDone={}; ED.ocrCache={}; ED.ocrBusy=null; ED.docFam='song'; ED.news=[]; ED.seq=0; ED.fontOps={};
   }
   ED.open=true; ED.page=(pageIdx!=null?pageIdx:(selSorted()[0]||0)); ED.zoom=1;
   $('edName').textContent=st.name;
@@ -2275,7 +2419,10 @@ async function openEditor(pageIdx){
 function closeEditor(){ ED.open=false; edHideFloat(); $('editor').classList.remove('show'); }
 
 /* 某条修改记录「跟随原文」时该用的字族 */
-function editAutoFam(e){ return pageFamily(e.page) || e.autoSrc || ED.docFam || 'song'; }
+function editAutoFam(e){
+  const a=e.autoSrc && famFromName(e.autoSrc);   // autoSrc 存的是真实字体名（SimHei 等）时直接判族
+  return a || pageFamily(e.page) || e.autoSrc || ED.docFam || 'song';
+}
 
 /* 后台判断整份文档主要用的中文字体（扫描件没有文字层，只能靠它选字体） */
 async function detectDocFam(){
@@ -2320,6 +2467,7 @@ async function edRender(){
   const {lines}=await pageTextLines(page);
   ED.lines=lines.filter(L=>L.text && L.text.trim() && L.x2>L.x);
   if(!ED.lines.length && ED.ocrCache[ED.page]) ED.lines=ED.ocrCache[ED.page];
+  try{ await attachLineFonts(await libDoc(), ED.page, ED.lines.filter(L=>!L.ocr)); }catch(e){}
   const mainSize=edNormalizeSizes(); // 先按正文主字号兜一遍，防个别行被字体度量带偏
   edMarkBadLines();   // 检出编码坏掉的行（提取出来是乱码的那种）
   edSampleInk(mainSize); // 采墨色 + 用画面上量到的墨高校准字号
@@ -2695,8 +2843,8 @@ function edReflowBelow(P){
     if(L.y >= P.yEnd-0.8) continue;
     if(L.ocr) return null;                                          // 扫描页：可见字是位图，挪不动
     if(pend.some(e=>!e.multi && Math.abs(e.y-L.y)<1.2)) return null; // 该行有没落盘的修改，动了会丢
-    const fam=(ED.famMode && ED.famMode!=='auto') ? ED.famMode : (pageFamily(ED.page) || L.fam || ED.docFam || 'song');
-    below.push({ x:L.x, y:L.y, x2:L.x2, size:(L.size>0?L.size:10), fam,
+    const fam=edFam(L);
+    below.push({ x:L.x, y:L.y, x2:L.x2, size:(L.size>0?L.size:10), fam, bold:!!L.bold,
                  color:edPenColor(L), text:String(L.text||'') });
   }
   return below.length ? { below:below, yMin:P.yEnd-0.8 } : null;
@@ -2729,8 +2877,8 @@ function edRenumberRecords(P, numText){
     ED.edits.push({ page:ED.page, x:L.x, y:L.y, w:(L.x2-L.x), h:(L.size>0?L.size:10),
                     old:L.text, text:nt, full:nt, oldFull:L.text,
                     color:edPenColor(L), size:(L.size>0?L.size:10), inkH:L.inkH||null,
-                    ocr:false, bg:null, fam:edFam(L), hscale:1,
-                    autoFam:false, autoSize:false, bold:false, italic:false, align:null, lh:null, renum:true });
+                 ocr:false, bg:null, fam:edFam(L), hscale:1,
+                 autoFam:false, autoSize:false, bold:!!L.bold, italic:false, align:null, lh:null, renum:true });
     k++;
   }
   return k;
@@ -2776,7 +2924,7 @@ function edApplyParaText(pi, newText){
   const rec={ page:ED.page, multi:true, x:P.x0, xEnd:P.x1, y:P.y0, yEnd:P.yEnd, w:edAvailW(P), h:P.size,
               nOld:P.n, lead:P.lead, indent:P.indent, old:P.text, text:newText, color:edPenColor(L0), size:P.size,
               inkH:L0.inkH||null, fam:edFam(L0), bg:L0.ocr?edBgSample(edBox(L0)):null, gapUp:edGapUp(P),
-              ocr:!!L0.ocr, autoFam:true, autoSrc:L0.fam||null, autoSize:false, bold:false, italic:false, align:null };
+              ocr:!!L0.ocr, autoFam:true, autoSrc:L0.srcFont||L0.fam||null, autoSize:false, bold:!!L0.bold, italic:false, align:null };
   edAttachReflow(P, rec);
   ED.edits=ED.edits.filter(e=>!(e.page===ED.page &&
       (e.multi ? (Math.abs(e.y-P.y0)<1.6 && Math.abs(e.x-P.x0)<1.6)
@@ -3072,6 +3220,9 @@ function wrapPara(text, font, size, maxW, indentCh){
    （先看这一页 PDF 里真实写的字体名，再看 pdf.js 给的 CSS 族名，最后用整份文档主字体） */
 function edFam(L){
   if(ED.famMode && ED.famMode!=='auto') return ED.famMode;
+  /* 行级真实字体名最可信：标题用黑体、正文用宋体的文档，页级/文档级都会猜错 */
+  const lf=(L && L.srcFont && famFromName(L.srcFont));
+  if(lf) return lf;
   const pf=pageFamily(ED.page);
   if(pf) return pf;
   return (L && L.fam) || ED.docFam || 'song';
@@ -3229,7 +3380,7 @@ function edPaintCanvas(){
           if(!b.text) continue;
           const bs=Math.max(4, b.size||10);
           ctx.fillStyle=b.color||'#111111';
-          ctx.font=(bs*k)+'px '+famCss(b.fam||fam);
+          ctx.font=(b.bold?'bold ':'')+(bs*k)+'px '+famCss(b.fam||fam);
           ctx.fillText(b.text, X(b.x+mvx), Y(b.y-pv.delta+mvy));
         }
       }
@@ -3477,11 +3628,13 @@ function edStartEdit(i){
   }
   d.style.fontSize = (Math.round(em*10)/10)+'px';
   d.style.fontFamily = famCss(fam);      // 预览就用原文那款字体，改完是什么样当场看到
+  const boldAuto = !!L.bold || !!(prev&&prev.bold);
+  if(boldAuto) d.style.fontWeight = 'bold';
   d.style.color = (prev&&prev.color)||edPenColor(L);
   d.dataset.fsize=(prev&&prev.size)||((L.size>0)?L.size:edOcrSize(L,'',fam));
   d.dataset.fcolor=d.style.color;
   d.dataset.fa=(prev&&prev.align)||'left';
-  d.dataset.fb=(prev&&prev.bold)?'1':'';
+  d.dataset.fb=boldAuto?'1':'';
   d.dataset.fi=(prev&&prev.italic)?'1':'';
   $('edLayer').appendChild(d);
   ED.inline=d;
@@ -3543,6 +3696,8 @@ function edStartPara(pi){
   d.style.fontSize = (Math.round(em*10)/10)+'px';
   d.style.lineHeight = (Math.round(lh*10)/10)+'px';
   d.style.fontFamily = famCss(fam);
+  const boldAuto0 = !!L0.bold || !!(prev&&prev.bold);
+  if(boldAuto0) d.style.fontWeight = 'bold';
   d.style.color = (prev&&prev.color)||edPenColor(L0);
   d.style.background = (prev&&prev.bg)||(L0.ocr ? edBgSample(edBox(L0)) : '#ffffff');
   d.style.textIndent = (P.indent*em)+'px';   // 首行缩进两字，跟原文一致
@@ -3553,7 +3708,7 @@ function edStartPara(pi){
   d.dataset.fsize=(prev&&prev.size)||P.size;
   d.dataset.fcolor=d.style.color;
   d.dataset.fa=(prev&&prev.align)||'left';
-  d.dataset.fb=(prev&&prev.bold)?'1':'';
+  d.dataset.fb=boldAuto0?'1':'';
   d.dataset.fi=(prev&&prev.italic)?'1':'';
   d.dataset.flh=(prev&&prev.lh)?prev.lh:'';
   edFmtShow(d);       // Acrobat 式格式条
@@ -3652,8 +3807,8 @@ function edCommitPara(d){
   const rec={ page:ED.page, multi:true, x:P.x0, xEnd:P.x1, y:P.y0, yEnd:P.yEnd, w:edAvailW(P), h:P.size,
               nOld:P.n, lead:P.lead, indent:P.indent, old:P.text, text, color, size:P.size, inkH:P.lines[0].inkH||null,
               fam:edFam(P.lines[0]), bg:P.lines[0].ocr?edBgSample(edBox(P.lines[0])):null,
-              gapUp:edGapUp(P), ocr:!!P.lines[0].ocr, autoFam:true, autoSrc:P.lines[0].fam||null, autoSize:false,
-              bold:d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null };
+              gapUp:edGapUp(P), ocr:!!P.lines[0].ocr, autoFam:true, autoSrc:P.lines[0].srcFont||P.lines[0].fam||null, autoSize:false,
+              bold:(!!(P.lines[0]&&P.lines[0].bold))||d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null };
   const lhv=parseFloat(d.dataset.flh);
   if(lhv>0){ rec.lh=lhv; rec.lead=Math.round(rec.size*lhv*10)/10; }
   const gav=parseFloat(d.dataset.fga);
@@ -3737,8 +3892,8 @@ function edCommitInline(){
     const P=P0;
     const recM={ page:ED.page, multi:true, x:L.x, xEnd:L.x2, y:L.y, yEnd:L.y, w:avW, h:size,
                  nOld:1, lead, indent:0, old:L.text, text, color, size, fam, bg, inkH:L.inkH||null,
-                 gapUp:edGapUp(P), ocr:!!L.ocr, autoFam:true, autoSrc:L.fam||null, autoSize:false,
-                 bold:d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null, lh:parseFloat(d.dataset.flh)||null };
+                 gapUp:edGapUp(P), ocr:!!L.ocr, autoFam:true, autoSrc:L.srcFont||L.fam||null, autoSize:false,
+                 bold:(!!L.bold)||d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null, lh:parseFloat(d.dataset.flh)||null };
     edAttachReflow(P0, recM);
     const k=ED.edits.findIndex(e=>e.multi && e.page===ED.page && Math.abs(e.y-L.y)<1.6 && Math.abs(e.x-L.x)<1.6);
     if(k>=0) ED.edits[k]=recM; else ED.edits.push(recM);
@@ -3758,13 +3913,13 @@ function edCommitInline(){
       rec={ page:ED.page, suffix:true, x:sp.x0, w:Math.max(0.6,(L.x2||sp.x0)-sp.x0), y:L.y, h:sp.size,
             old:String(L.text||'').slice(sp.p), text:sp.tail, full:text, oldFull:L.text,
             color, size:sp.size, inkH:L.inkH||null, ocr:false, bg:null, fam,
-            hscale:sp.scale, autoFam:false, autoSize:false, bold:false, italic:false, align:null, lh:null };
+            hscale:sp.scale, autoFam:false, autoSize:false, bold:!!L.bold, italic:false, align:null, lh:null };
     }
   }
   if(!rec){
     rec={ page:ED.page, x:L.x, y:L.y, w:(L.x2-L.x), h:(L.ocr?edLineH(L):L.size), old:L.text, text, color, size, inkH:L.inkH||null,
-          ocr:!!L.ocr, bg, fam, autoFam:true, autoSrc:L.fam||null, autoSize:!manual,
-          bold:d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null, lh:parseFloat(d.dataset.flh)||null };
+          ocr:!!L.ocr, bg, fam, autoFam:true, autoSrc:L.srcFont||L.fam||null, autoSize:!manual,
+          bold:(!!L.bold)||d.dataset.fb==='1', italic:d.dataset.fi==='1', align:d.dataset.fa||null, lh:parseFloat(d.dataset.flh)||null };
     if(rec.lh>0) rec.lead=Math.round(rec.size*rec.lh*10)/10;
   }
   /* 列表自动编号：这一行带编号时，下方同 x 的列表项顺延改号 */
@@ -3901,6 +4056,7 @@ async function edBatchReplace(){
     setStatus(`正在第 ${p+1}/${st.pageCount} 页查找「${find}」…${p===0?'（扫描件会自动识别，稍慢）':''}`);
     const page=await st.jsDoc.getPage(p+1);
     const r=await linesForPage(page, 'auto');
+    try{ await attachLineFonts(await libDoc(), p, r.lines.filter(L=>!L.ocr)); }catch(e){}
     // 已经整段改过的行不再参与批量替换，否则两套记录会在同一块地方打架
     const inPara=L=>ED.edits.some(e=>e.multi && e.page===p && L.y<=e.y+2.5 && L.y>=(e.yEnd!=null?e.yEnd:e.y)-2.5);
     const hits=r.lines.filter(L=>L.text && L.text.indexOf(find)>=0 && !inPara(L));
@@ -3937,13 +4093,13 @@ async function edBatchReplace(){
           rec={ page:p, suffix:true, x:sp.x0, w:Math.max(0.6,(L.x2||sp.x0)-sp.x0), y:L.y, h:sp.size,
                 old:String(L.text||'').slice(sp.p), text:sp.tail, full:newText, oldFull:L.text,
                 color:L.ink||'#000000', size:sp.size, inkH:L.inkH||null, ocr:false, bg:null, fam,
-                hscale:sp.scale, autoFam:false, autoSize:false, bold:false, italic:false, align:null, lh:null };
+                hscale:sp.scale, autoFam:false, autoSize:false, bold:!!L.bold, italic:false, align:null, lh:null };
         }
       }
       if(!rec){
         rec={ page:p, x:L.x, y:L.y, w:(L.x2-L.x), h:(r.ocr?(L.h||L.size):L.size), old:L.text,
               text:newText, full:newText, color:(oldRec&&oldRec.color)||L.ink||'#000000', size,
-              ocr:!!r.ocr, bg, fam, autoFam:true, autoSrc:L.fam||null, autoSize:true };
+              ocr:!!r.ocr, bg, fam, autoFam:true, autoSrc:L.srcFont||L.fam||null, autoSize:true, bold:!!L.bold };
       }
       /* 同一行只留这一条：原来的单行记录（含差异重写留下的半截记录）一起撤掉 */
       ED.edits=ED.edits.filter(e=>e===rec || e.multi || e.page!==p || Math.abs(e.y-L.y)>=1.2);
@@ -4186,7 +4342,7 @@ async function edSaveEdits(){
           const bs=Math.max(4, b.size||10);
           page.drawRectangle({x:b.x-6, y:b.y-bs*0.32, width:Math.max(8,(b.x2-b.x)+12), height:bs*1.42, color:white});
           if(b.text) drawStyledText(page, b.text, {x:b.x+(e.mvx||0), y:b.y-lay.delta+(e.mvy||0),
-                                                   size:bs, font:f2, color:hex2rgb(b.color||'#111111')});
+                                                   size:bs, font:f2, color:hex2rgb(b.color||'#111111'), bold:b.bold});
         }
         (annShifts[e.page]=annShifts[e.page]||[]).push({yMin:e.reflow.yMin, delta:lay.delta});
       }
@@ -4683,7 +4839,7 @@ window.__PS = {
     const L=ED.lines[i]; if(!L) return null;
     const rec={ page, x:L.x, y:L.y, w:(L.x2-L.x), h:L.size, old:L.text,
                 text, color:color||'#111111', size:size||L.size,
-                fam:edFam(L), autoFam:true, autoSrc:L.fam||null, ocr:!!L.ocr };
+                fam:edFam(L), autoFam:true, autoSrc:L.srcFont||L.fam||null, ocr:!!L.ocr };
     const k=ED.edits.findIndex(e=>e.page===page && Math.abs(e.y-L.y)<1.2 && Math.abs(e.x-L.x)<1.2);
     if(k>=0) ED.edits[k]=rec; else ED.edits.push(rec);
     edPaintLayer(); edSyncSide();
