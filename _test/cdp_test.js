@@ -70,7 +70,7 @@ const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString('base64');
 
   // 0. 页面健康
   const health = await evalJS(send, `({title:document.title, hasPS:!!window.__PS, hasLibs:!!(window.pdfjsLib&&window.PDFLib&&window.fontkit), tools:document.querySelectorAll('.tbtn').length})`);
-  check('页面加载', health.title.includes('PDF') && health.hasPS && health.hasLibs && health.tools === 25, JSON.stringify(health));
+  check('页面加载', health.title.includes('PDF') && health.hasPS && health.hasLibs && health.tools === 26, JSON.stringify(health));
 
   // 0.1 侧栏可用性（曾在 780 高窗口里滚不到底部，PDF 转 Word/Excel/PPT 找不到）
   const sideUi = await evalJS(send, `(()=>{
@@ -86,7 +86,7 @@ const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString('base64');
     return {n, back:document.querySelectorAll('.tbtn').length, overflow:getComputedStyle(box).overflowY,
             scrollable:box.scrollHeight>box.clientHeight, f1, f2, chips};
   })()`);
-  check('侧栏·可滚动', sideUi.n === 25 && sideUi.back === 25 && sideUi.overflow === 'auto' && sideUi.scrollable, JSON.stringify({n: sideUi.n, ov: sideUi.overflow, sc: sideUi.scrollable}));
+  check('侧栏·可滚动', sideUi.n === 26 && sideUi.back === 26 && sideUi.overflow === 'auto' && sideUi.scrollable, JSON.stringify({n: sideUi.n, ov: sideUi.overflow, sc: sideUi.scrollable}));
   check('侧栏·搜索过滤', sideUi.f1.length === 1 && /Word/.test(sideUi.f1[0]) && sideUi.f2.length === 1 && /Excel/.test(sideUi.f2[0]), JSON.stringify([sideUi.f1, sideUi.f2]));
   check('首屏快捷入口', sideUi.chips.length >= 5 && sideUi.chips.some(t=>/Word/.test(t)) && sideUi.chips.some(t=>/Excel/.test(t)) && sideUi.chips.some(t=>/PPT/.test(t)), JSON.stringify(sideUi.chips));
 
@@ -996,6 +996,65 @@ const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString('base64');
   check('PDF转HTML·纯文字模式',
     s.length===1 && !htmlNever.includes('class="pgimg"') && htmlNever.includes('本页没有文字层'),
     'size=' + (s[0] && s[0].size));
+
+  /* ===== 手写签名板 E2E：真实指针绘制 → 外接框裁剪 → 落章像素断言 + 附加日期 ===== */
+  const sigPad = await evalJS(send, `(async function(){
+    __PS.selectTool('sign');
+    await __PS.testOpenDoc('test-a.pdf','${bA}');
+    openSignPad();
+    const cv=document.getElementById('signpad-cv');
+    if(!cv) return {open:false};
+    const r=cv.getBoundingClientRect();
+    const pe=(type,x,y)=>new PointerEvent(type,{clientX:x,clientY:y,bubbles:true,cancelable:true,pointerId:1,pointerType:'mouse',isPrimary:true});
+    cv.dispatchEvent(pe('pointerdown', r.left+r.width*0.10, r.top+r.height*0.50));
+    for(const p of [[0.25,0.32],[0.40,0.55],[0.55,0.35],[0.72,0.52],[0.85,0.42]])
+      cv.dispatchEvent(pe('pointermove', r.left+r.width*p[0], r.top+r.height*p[1]));
+    cv.dispatchEvent(pe('pointerup', r.left+r.width*0.85, r.top+r.height*0.42));
+    document.getElementById('signpad-ok').click();
+    // 确认按钮是 async 处理器（toBlob 后才写入 pickedFiles.sign），轮询等待
+    let ready = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 100));
+      if (pickedFiles.sign && pickedFiles.sign.bytes && pickedFiles.sign.bytes[0] === 0x89 && pickedFiles.sign.bytes[1] === 0x50) { ready = true; break; }
+    }
+    return { open:true, ready };
+  })()`, 60000);
+  check('手写签名板·真实绘制并确认', sigPad && sigPad.open===true && sigPad.ready===true, JSON.stringify(sigPad));
+
+  const sigTrim = await evalJS(send, `(async()=>{ const bmp=await createImageBitmap(new Blob([pickedFiles.sign.bytes])); return {w:bmp.width,h:bmp.height}; })()`, 30000);
+  check('签名·外接框裁剪生效', sigTrim.w<600 && sigTrim.h<200 && sigTrim.w>60 && sigTrim.h>8, JSON.stringify(sigTrim));
+
+  // 原始文档章区暗像素基线
+  const cntBoxFn = `(docBytes)=>{
+    const W=595.28,H=841.89, sc=2, iw=0.18, ix=0.60, iy=0.78, hr=0.30;
+    return (async()=>{
+      const doc=await pdfjsLib.getDocument({data:docBytes.slice(), cMapUrl:'vendor/cmaps/', cMapPacked:true, standardFontDataUrl:'vendor/standard_fonts/'}).promise;
+      const page=await doc.getPage(1); const vp0=page.getViewport({scale:1});
+      const Wd=vp0.width, Hd=vp0.height, vp=page.getViewport({scale:sc});
+      const cv=document.createElement('canvas'); cv.width=Math.round(vp.width); cv.height=Math.round(vp.height);
+      const ctx=cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+      await page.render({canvasContext:ctx, viewport:vp, intent:'print'}).promise;
+      const w=Wd*iw, h=w*hr, x0=(Wd-w)*ix, y0=(Hd-h)*iy;
+      const cnt=(bx0,by0,bx1,by1)=>{ let dark=0;
+        for(let py=Math.max(0,Math.round((Hd-by1)*sc)); py<Math.min(cv.height,Math.round((Hd-by0)*sc)); py+=2)
+          for(let px=Math.max(0,Math.round(bx0*sc)); px<Math.min(cv.width,Math.round(bx1*sc)); px+=2){
+            const d=ctx.getImageData(px,py,1,1).data; if(d[0]<110&&d[1]<110&&d[2]<110) dark++;
+          } return dark; };
+      return { box: cnt(x0,y0,x0+w,y0+h), below: cnt(x0,y0-26,x0+w*0.75,y0-2) };
+    })(); }`;
+  const sigOrig = await evalJS(send, `st.bytes ? (${cntBoxFn})(st.bytes) : null`, 60000);
+  await evalJS(send, `__PS_SAVED__.length=0; (async()=>{ __PS.selectTool('sign'); await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name,size:f.bytes.length,head:String.fromCharCode(...f.bytes.slice(0,5))}))`);
+  check('手写签名·落章保存为 PDF', s.length===1 && /_签名\.pdf$/.test(s[0].n) && s[0].head==='%PDF-', JSON.stringify(s));
+  const sigPix = await evalJS(send, `(${cntBoxFn})(__PS_SAVED__[0].bytes)`, 60000);
+  check('手写签名·章区新增墨迹', sigPix && sigOrig && sigPix.box > sigOrig.box + 5, 'orig=' + JSON.stringify(sigOrig) + ' signed=' + JSON.stringify(sigPix));
+
+  // 附加签名日期：日期带（章下方）出现墨迹
+  await evalJS(send, `(async()=>{ __PS.selectTool('sign'); document.getElementById('f_sdate').checked=true; __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name,size:f.bytes.length}))`);
+  const sigDate = await evalJS(send, `(${cntBoxFn})(__PS_SAVED__[0].bytes)`, 60000);
+  check('手写签名·附加日期', s.length===1 && sigDate && sigOrig && sigDate.below > sigOrig.below + 5, 'orig=' + JSON.stringify(sigOrig) + ' dated=' + JSON.stringify(sigDate));
+  await evalJS(send, `document.getElementById('f_sdate').checked=false;`, 20000);
 
   console.log(`\n==== 结果: ${results.length - fails}/${results.length} 通过 ====`);
 

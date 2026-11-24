@@ -480,6 +480,17 @@ const TOOLS = [
      {k:'ix', l:'水平位置 %', t:'number', v:58},
      {k:'iy', l:'垂直位置 %', t:'number', v:80}
    ]},
+  {id:'sign', g:'编辑', name:'手写签名', needDoc:true, grid:true,
+   desc:'在签名板上手写签名（鼠标 / 触屏），裁掉空白后以透明底落到勾选页面的指定位置，可附加签名日期。',
+   opts:[
+     {k:'spad', l:'签名板', t:'signpad'},
+     {k:'scolor', l:'墨色', t:'select', o:[['#111111','黑色'],['#1a3fb8','蓝色'],['#c02020','红色']], v:'#111111'},
+     {k:'sw', l:'笔迹粗细', t:'select', o:[['2','细'],['3.2','适中'],['5','粗']], v:'3.2'},
+     {k:'sdate', l:'附加签名日期', t:'check', v:false},
+     {k:'iw', l:'签名宽度占页面比例 %', t:'number', v:18},
+     {k:'ix', l:'水平位置 %', t:'number', v:60},
+     {k:'iy', l:'垂直位置 %', t:'number', v:78}
+   ]},
   {id:'edittext', g:'编辑', name:'编辑 PDF 文字', needDoc:true, grid:true, openEditor:true,
    desc:'进入页面编辑界面：点页面上任意一行文字就能改内容 / 删除 / 改颜色字号，改完保存为新 PDF。文字版 PDF 可用（扫描件没有文字层，请用「编辑 PDF 图片」框选处理）。',
    opts:[]},
@@ -564,6 +575,7 @@ const ALIAS = {
   p2pptx:'ppt pptx 幻灯片 演示 转换 office wps',
   edittext:'编辑 改字 修改文字 替换文字 删除文字 pdf编辑', editimg:'编辑 图片 照片 图章 水印 覆盖 替换 删除 pdf编辑',
   wm:'水印 去水印 加水印', addimg:'插图 签名 logo 图片 印章', addtext:'文字 图章 盖章',
+  sign:'签名 手写 签字 电子签名 签章 手写板 手写签名',
   p2i:'图片 png jpg 导出', i2p:'图片 照片 合成', text:'文字 txt 提取 导出',
   p2html:'html 网页', p2epub:'epub 电子书 kindle', compress:'压缩 变小 瘦身',
   repair:'修复 损坏 打不开', encrypt:'加密 密码 保护', decrypt:'解密 密码 移除',
@@ -597,7 +609,7 @@ $('tsearch').addEventListener('input', e=>renderSide(e.target.value));
 (function(){
   const box=$('hotchips'); if(!box) return;
   const HOT=[['p2docx','PDF 转 Word'],['p2xlsx','PDF 转 Excel'],['p2pptx','PDF 转 PPT'],
-             ['edittext','编辑 PDF 文字'],['editimg','编辑 PDF 图片'],['wm','加水印'],['merge','合并 PDF']];
+             ['edittext','编辑 PDF 文字'],['editimg','编辑 PDF 图片'],['wm','加水印'],['merge','合并 PDF'],['sign','手写签名']];
   for(const [id,label] of HOT){
     const b=document.createElement('button'); b.className='chip'; b.type='button'; b.textContent=label;
     b.onclick=(e)=>{ e.stopPropagation(); selectTool(id); };
@@ -621,6 +633,7 @@ function icon(id){
     decrypt:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.8-1.2"/><path d="M12 14.5v2"/>',
     addtext:'<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 9h7M10 9v5"/><path d="M17 21l2-2 2 2"/>',
     addimg:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/>',
+    sign:'<path d="m12 3 5 5L7 18l-4 1 1-4z"/><path d="M4 21h16"/>',
     edittext:'<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 9h10M7 13h5"/><path d="m15 19 2 2 4-4"/>',
     editimg:'<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="6.5" y="6.5" width="7" height="7" rx="1"/><path d="m14 14 2 2 3-3"/><path d="M19 17v4"/>' ,
     highlight:'<path d="M4 20h16"/><path d="m6 16 9.5-9.5a2.1 2.1 0 0 1 3 3L9 19l-4 1z"/><path d="m13 8 3 3"/>',
@@ -661,6 +674,9 @@ function renderPanel(){
     } else if(o.t==='file'){
       row.innerHTML=`<label>${o.l}</label><div class="fitem" style="cursor:pointer" data-filebtn="${o.k}"><span style="color:#9aa1ab">点击选择图片…</span></div>`;
       row.querySelector('[data-filebtn]').onclick=()=>pickImageFile(o.k);
+    } else if(o.t==='signpad'){
+      row.innerHTML=`<label>${o.l}</label><div class="fitem" style="cursor:pointer" data-signbtn="1"><span style="color:#9aa1ab">✍ 点击手写签名…</span></div>`;
+      row.querySelector('[data-signbtn]').onclick=()=>openSignPad();
     } else {
       row.innerHTML=`<label>${o.l}</label><input type="${o.t}" id="f_${o.k}" value="${o.v}" placeholder="${o.ph||''}">`;
     }
@@ -979,6 +995,62 @@ async function setPickedImage(k, f){
   if(el) el.firstElementChild.textContent='✓ '+f.name;
 }
 
+/* ---- 手写签名板：指针绘制 → 裁掉空白外接框 → 透明底 PNG ---- */
+let _signPad=null;
+function openSignPad(){
+  if(_signPad) return;
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(15,18,22,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 12px 40px rgba(0,0,0,.28);width:660px;max-width:92vw">
+    <div style="font-weight:700;margin-bottom:10px">手写签名（鼠标 / 触屏在框内书写）</div>
+    <canvas id="signpad-cv" width="600" height="200" style="width:100%;height:200px;border:1.5px dashed #c9cfda;border-radius:10px;touch-action:none;cursor:crosshair"></canvas>
+    <div style="display:flex;gap:10px;margin-top:12px;justify-content:flex-end">
+      <button id="signpad-clear" class="btn">清除重写</button>
+      <button id="signpad-ok" class="btn primary">确认签名</button>
+      <button id="signpad-no" class="btn">取消</button>
+    </div></div>`;
+  document.body.appendChild(ov);
+  _signPad=ov;
+  const cv=ov.querySelector('#signpad-cv'), ctx=cv.getContext('2d');
+  const v=readOpts();
+  ctx.lineWidth=+v.sw||3.2; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.strokeStyle=v.scolor||'#111111';
+  let drawing=false, drawn=false, lx=0, ly=0;
+  const pos=e=>{ const r=cv.getBoundingClientRect(); return [(e.clientX-r.left)*cv.width/r.width, (e.clientY-r.top)*cv.height/r.height]; };
+  cv.addEventListener('pointerdown',e=>{
+    e.preventDefault(); drawing=true; drawn=true; [lx,ly]=pos(e);
+    ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(lx+0.01,ly+0.01); ctx.stroke();
+    try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+  });
+  cv.addEventListener('pointermove',e=>{ if(!drawing) return; const[x,y]=pos(e); ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(x,y); ctx.stroke(); [lx,ly]=[x,y]; });
+  const stop=()=>{ drawing=false; };
+  cv.addEventListener('pointerup',stop); cv.addEventListener('pointercancel',stop);
+  ov.querySelector('#signpad-clear').onclick=()=>{ ctx.clearRect(0,0,cv.width,cv.height); drawn=false; };
+  const close=()=>{ document.body.removeChild(ov); _signPad=null; };
+  ov.querySelector('#signpad-no').onclick=close;
+  ov.onclick=e=>{ if(e.target===ov) close(); };
+  ov.querySelector('#signpad-ok').onclick=async()=>{
+    if(!drawn){ setStatus('签名板还是空的，先写几个字','err'); return; }
+    // 笔迹外接框（留 8% 边距），裁掉大片空白
+    const d=ctx.getImageData(0,0,cv.width,cv.height).data;
+    let x0=cv.width,y0=cv.height,x1=-1,y1=-1;
+    for(let y=0;y<cv.height;y++)for(let x=0;x<cv.width;x++){
+      if(d[(y*cv.width+x)*4+3]>8){ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; }
+    }
+    if(x1<0){ setStatus('签名板还是空的','err'); return; }
+    const pad=Math.round(Math.max(x1-x0,y1-y0)*0.08);
+    x0=Math.max(0,x0-pad); y0=Math.max(0,y0-pad);
+    x1=Math.min(cv.width-1,x1+pad); y1=Math.min(cv.height-1,y1+pad);
+    const out=document.createElement('canvas'); out.width=x1-x0+1; out.height=y1-y0+1;
+    out.getContext('2d').drawImage(cv, x0,y0,out.width,out.height, 0,0,out.width,out.height);
+    const blob=await new Promise(r=>out.toBlob(r,'image/png'));
+    pickedFiles.sign={name:'手写签名.png', bytes:new Uint8Array(await blob.arrayBuffer())};
+    const el=document.querySelector('[data-signbtn]'); if(el) el.firstElementChild.textContent='✓ 手写签名已就绪';
+    close();
+    setStatus('✅ 签名已就绪，点「开始处理」落到勾选页面','ok');
+  };
+}
+
 /* ============ 字体 ============ */
 let _fontBytes=null;
 async function fontBytes(){
@@ -1042,7 +1114,7 @@ async function run(){
   }
   st.busy=true; $('runbtn').disabled=true; setStatus('处理中…');
   try{
-    await ({merge,split,extract,delete:del,rotate,pagenum,wm,addtext,addimg,edittext,editimg,highlight,p2i,i2p,text,p2html,p2epub,p2docx,p2xlsx,p2pptx,compress,repair,encrypt,decrypt,redact})[t.id](v);
+    await ({merge,split,extract,delete:del,rotate,pagenum,wm,addtext,addimg,sign,edittext,editimg,highlight,p2i,i2p,text,p2html,p2epub,p2docx,p2xlsx,p2pptx,compress,repair,encrypt,decrypt,redact})[t.id](v);
   }catch(e){
     if(e !== HEALED_RESTART){ console.error(e); setStatus('出错：'+(e.message||e),'err'); }
   }
@@ -1469,6 +1541,35 @@ async function addimg(v){
   const bytes=await doc.save({useObjectStreams:true});
   await saveOne(st.name.replace(/\.pdf$/i,'')+'_插图.pdf', bytes);
   setStatus(`✅ 已在 ${sel.length} 页插入图片并保存`,'ok');
+}
+
+/* ---- 手写签名：签名板 PNG（透明底）落到勾选页面，可附加签名日期 ---- */
+async function sign(v){
+  const sel=selSorted();
+  if(!sel.length){ setStatus('请先勾选页面','err'); return; }
+  const pf=pickedFiles.sign;
+  if(!pf){ setStatus('请先点击「签名板」手写签名','err'); return; }
+  const doc=await loadPdf(st.bytes);
+  const img=await doc.embedPng(pf.bytes);
+  const pages=doc.getPages();
+  const cl=x=>Math.min(100,Math.max(0,+x||0))/100;
+  const dnow=new Date();
+  for(const pi of sel){
+    const page=pages[pi], {width,height}=page.getSize();
+    const w=width*Math.min(1,Math.max(0.02,(+v.iw||18)/100));
+    const h=w*img.height/img.width;
+    const x=(width-w)*cl(v.ix), y=(height-h)*cl(v.iy);
+    page.drawImage(img,{x,y,width:w,height:h});
+    if(v.sdate){
+      const f=await ensureFont(doc,'song');
+      const fs=Math.max(7, w*0.10);
+      page.drawText(`${dnow.getFullYear()} 年 ${dnow.getMonth()+1} 月 ${dnow.getDate()} 日`,
+        {x, y:y-fs*1.5, size:fs, font:f, color:hex2rgb(v.scolor||'#111111')});
+    }
+  }
+  const bytes=await doc.save({useObjectStreams:true});
+  await saveOne(st.name.replace(/\.pdf$/i,'')+'_签名.pdf', bytes);
+  setStatus(`✅ 已在 ${sel.length} 页落签名并保存`,'ok');
 }
 
 /* ---- 编辑文字：精确定位 → 白块覆盖 → 重写 ---- */
