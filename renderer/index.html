@@ -1702,6 +1702,61 @@ function modalSize(items){
   if(!best) best=Math.max(10, ...items.map(i=>i.h||0));
   return best;
 }
+/* 表格/双栏拆分：同一视觉行里列间隙明显大于行内正常字距时，拆成多个独立行（单元格）。
+   不拆的话点一个格子改字，整行其他列会被当成"这一行"一起重写吞掉（表格保单实测）。
+   文字层与 OCR 行共用（2026-11-24 截图实测）：扫描保单的整行表头是一条 OCR 行，
+   点一格 → 整行被当一段重写吞掉其他格，字号还按整行框高推 → 变大盖住下文。
+   阈值 = max(18pt, 2.5×字号)（OCR 行下限 12pt）：宽空格字段行（间隙≈2×字号）不拆，
+   表格列间隙（≥3×字号）必拆。
+   拆完每个 run 再按 y 聚类：OCR 行框可能把同一格子的上下两行文字并进来
+   （整行 bbox 高≈两行），不拆开行高就翻倍，字号推算跟着翻倍。 */
+function splitTableRuns(lines){
+  const out=[];
+  for(const L of lines){
+    if(!L.items || L.items.length<2){ out.push(L); continue; }
+    const its=[...L.items].sort((a,b)=>a.x-b.x);
+    /* 基准字号用字形高度众数，不用 L.size：OCR 行框把两行并进来时 L.size 是翻倍的，
+       按它算阈值就永远拆不开（2026-11-24 表头整行实测） */
+    const sz=Math.max(6, modalSize(its)||10);
+    const gaps=[];
+    for(let k=1;k<its.length;k++) gaps.push(its[k].x-(its[k-1].x+its[k-1].w));
+    /* 阈值=max(18pt, 2.5×字号)（文字层沿用审计过的旧公式：宽空格字段行「签单日期：  年 月 日」
+       间隙≈2×字号，不能拆；表格列间隙 ≥3×字号必拆）。
+       OCR 行下限放宽到 12pt：扫描表格字号小（≈7.5pt），列间隙 20~25pt 必须拆得开。
+       漏拆的代价（吞掉旁边格子）远大于误拆，所以 OCR 行宁紧勿松 */
+    const thr=Math.max(L.ocr?12:18, sz*2.5);
+    const runs=[[its[0]]];
+    for(let k=1;k<its.length;k++){
+      if(gaps[k-1]>thr) runs.push([its[k]]);
+      else runs[runs.length-1].push(its[k]);
+    }
+    /* 没拆列时也做 y 聚类：OCR 可能把同一条竖排文字/同一格子上下两行并进一个行框 */
+    const runList=(runs.length<2)?[its]:runs;
+    const anyChange=(runs.length>=2);
+    for(const run of runList){
+      const si=[...run].sort((a,b)=>b.y-a.y);
+      const groups=[[si[0]]];
+      for(let k=1;k<si.length;k++){
+        const g0=groups[groups.length-1][0];
+        if(Math.abs(si[k].y-g0.y)<=Math.max(3,(si[k].h||sz)*0.55)) groups[groups.length-1].push(si[k]);
+        else groups.push([si[k]]);
+      }
+      if(!anyChange && groups.length<2){ out.push(L); continue; }
+      for(const gi of groups){
+        gi.sort((a,b)=>a.x-b.x);
+        out.push(Object.assign({}, L, {
+          y:gi[0].y, h:Math.max(...gi.map(i=>i.h)),
+          items:gi, text:gi.map(i=>i.str).join(''),
+          x:Math.min(...gi.map(i=>i.x)),
+          x2:Math.max(...gi.map(i=>i.x+i.w)),
+          size:modalSize(gi),
+          fam:(gi.map(i=>i.fam).filter(Boolean)[0])||L.fam||null
+        }));
+      }
+    }
+  }
+  return out;
+}
 async function pageTextLines(jsPage){
   const tc=await jsPage.getTextContent();
   const styles=tc.styles||{};
@@ -1730,31 +1785,8 @@ async function pageTextLines(jsPage){
     const fm=L.items.map(i=>i.fam).filter(Boolean);
     L.fam=fm.length?fm[0]:null;
   }
-  /* 表格/双栏：同一视觉行里列间隙很大（远超正常字距）时拆成多个独立行（单元格）。
-     不拆的话点一个格子改字，整行其他列会被当成"这一行"一起重写吞掉（表格保单实测）。
-     阈值取 max(18pt, 2.5×字号)：正常句间空隙不拆，表格列间隙（通常 ≥3 字宽）必拆。 */
-  const runLines=[];
-  for(const L of lines){
-    if(L.ocr || !L.items || L.items.length<2){ runLines.push(L); continue; }
-    const sz=Math.max(6, L.size||10);
-    const thr=Math.max(18, sz*2.5);
-    const runs=[[L.items[0]]];
-    for(let k=1;k<L.items.length;k++){
-      const gap=L.items[k].x-(L.items[k-1].x+L.items[k-1].w);
-      if(gap>thr) runs.push([L.items[k]]);
-      else runs[runs.length-1].push(L.items[k]);
-    }
-    if(runs.length<2){ runLines.push(L); continue; }
-    for(const its of runs){
-      runLines.push({ y:L.y, h:Math.max(...its.map(i=>i.h)), items:its,
-                      text:its.map(i=>i.str).join(''),
-                      x:Math.min(...its.map(i=>i.x)),
-                      x2:Math.max(...its.map(i=>i.x+i.w)),
-                      size:modalSize(its),
-                      fam:(its.map(i=>i.fam).filter(Boolean)[0])||null });
-    }
-  }
-  lines=runLines;
+  /* 表格/双栏拆分：文字层与 OCR 行共用 splitTableRuns（见函数头注释） */
+  lines=splitTableRuns(lines);
   lines.sort((a,b)=>b.y-a.y);
   return {lines, W:vp.width, H:vp.height};
 }
@@ -2089,7 +2121,7 @@ async function ocrPageLines(jsPage, scale, onProg){
   const res = await w.recognize(cv, {}, { blocks: true, text: true });
   const data = (res && res.data) || {};
   const H = jsPage.getViewport({ scale: 1 }).height;
-  const lines = [];
+  let lines = [];   // splitTableRuns 会重赋值，必须 let（const 会静默炸掉整页识别）
   const push = L => {
     const t = (L.text || '').replace(/\s+/g, ' ').trim();
     if (!t) return;
@@ -2108,6 +2140,8 @@ async function ocrPageLines(jsPage, scale, onProg){
   };
   for (const blk of (data.blocks || [])) for (const par of (blk.paragraphs || [])) for (const L of (par.lines || [])) push(L);
   if (!lines.length && Array.isArray(data.lines)) data.lines.forEach(push);
+  /* 扫描页同样要拆表格列：整行表头是一条 OCR 行，不拆点一格就吞全行（2026-11-24 实测） */
+  lines = splitTableRuns(lines);
   lines.sort((a, b) => b.y - a.y || a.x - b.x);
   return lines;
 }
