@@ -1714,7 +1714,7 @@ async function pageTextLines(jsPage){
                 hRaw:it.height||0, fam: famFromCss(sty && sty.fontFamily)});
   }
   items.sort((a,b)=>b.y-a.y || a.x-b.x);
-  const lines=[];
+  let lines=[];
   for(const it of items){
     let L=null;
     for(const l of lines){ if(Math.abs(l.y-it.y)<=Math.max(3, l.h*0.45)){ L=l; break; } }
@@ -1730,6 +1730,31 @@ async function pageTextLines(jsPage){
     const fm=L.items.map(i=>i.fam).filter(Boolean);
     L.fam=fm.length?fm[0]:null;
   }
+  /* 表格/双栏：同一视觉行里列间隙很大（远超正常字距）时拆成多个独立行（单元格）。
+     不拆的话点一个格子改字，整行其他列会被当成"这一行"一起重写吞掉（表格保单实测）。
+     阈值取 max(18pt, 2.5×字号)：正常句间空隙不拆，表格列间隙（通常 ≥3 字宽）必拆。 */
+  const runLines=[];
+  for(const L of lines){
+    if(L.ocr || !L.items || L.items.length<2){ runLines.push(L); continue; }
+    const sz=Math.max(6, L.size||10);
+    const thr=Math.max(18, sz*2.5);
+    const runs=[[L.items[0]]];
+    for(let k=1;k<L.items.length;k++){
+      const gap=L.items[k].x-(L.items[k-1].x+L.items[k-1].w);
+      if(gap>thr) runs.push([L.items[k]]);
+      else runs[runs.length-1].push(L.items[k]);
+    }
+    if(runs.length<2){ runLines.push(L); continue; }
+    for(const its of runs){
+      runLines.push({ y:L.y, h:Math.max(...its.map(i=>i.h)), items:its,
+                      text:its.map(i=>i.str).join(''),
+                      x:Math.min(...its.map(i=>i.x)),
+                      x2:Math.max(...its.map(i=>i.x+i.w)),
+                      size:modalSize(its),
+                      fam:(its.map(i=>i.fam).filter(Boolean)[0])||null });
+    }
+  }
+  lines=runLines;
   lines.sort((a,b)=>b.y-a.y);
   return {lines, W:vp.width, H:vp.height};
 }
@@ -2735,6 +2760,11 @@ function edSamePara(A, B, rightMax){
   if(Math.abs(ha-hb) > sz*0.34) return false;
   const dy=A.y-B.y;
   if(!(dy > sz*0.52 && dy < sz*2.35)) return false;
+  /* 两行中心一致（居中段，标题类）：第二行更短从中间起排是正常现象，
+     不能按"缩进/段末"规则拆开（居中标题两行实测） */
+  const cA=A.x+(A.x2-A.x)/2, cB=B.x+(B.x2-B.x)/2;
+  const centered=Math.abs(cA-cB)<=Math.max(2, sz*0.22);
+  if(centered) return true;
   if(A.x2 < B.x2 - sz*1.8) return false;          // 上一行明显短 → 它是段末行
   if(B.x > A.x + sz*1.15) return false;           // 本行缩进 → 新段首行
   if(A.x > B.x + sz*3.2) return false;            // 上一行缩进太多（居中标题）
@@ -2937,10 +2967,20 @@ function edApplyParaText(pi, newText){
   const flat=x=>String(x||'').replace(/\s+/g,'');
   if(flat(newText)===flat(P.text)) return false;
   const L0=P.lines[0];
+  /* 居中/右对齐段的"首行缩进"其实是左缘参差（右对齐段每行右缘对齐、左缘天然不齐），
+     当缩进用会把首行折行位置画歪、右缘推出页边（右对齐告知书实测） */
+  const effAlign=P.align||null;
   const rec={ page:ED.page, multi:true, x:P.x0, xEnd:P.x1, y:P.y0, yEnd:P.yEnd, w:edAvailW(P), h:P.size,
-              nOld:P.n, lead:P.lead, indent:(P.align==='center'?0:P.indent), old:P.text, text:newText, color:edPenColor(L0), size:P.size,
+              nOld:P.n, lead:P.lead, indent:((effAlign==='center'||effAlign==='right')?0:P.indent), old:P.text, text:newText, color:edPenColor(L0), size:P.size,
               inkH:L0.inkH||null, fam:edFam(L0), bg:L0.ocr?edBgSample(edBox(L0)):null, gapUp:edGapUp(P),
-              ocr:!!L0.ocr, autoFam:true, autoSrc:L0.srcFont||L0.fam||null, autoSize:false, bold:!!L0.bold, italic:false, align:(P.align||null) };
+              ocr:!!L0.ocr, autoFam:true, autoSrc:L0.srcFont||L0.fam||null, autoSize:false, bold:!!L0.bold, italic:false, align:effAlign };
+  /* 每行自己的锚点（居中段各行中心可能略有差异，逐行保真）：
+     行数与原段一致时保存端/画布端逐行用原行锚点，行数变了才退回整段锚定 */
+  if(effAlign==='center'||effAlign==='right'){
+    rec.rowC=P.lines.map(l=>(effAlign==='center')
+      ? (l.x+(((l.x2!=null)?l.x2:(l.x+(l.w||0)))-l.x)/2)
+      : ((l.x2!=null)?l.x2:(l.x+(l.w||0))));
+  }
   edAttachReflow(P, rec);
   ED.edits=ED.edits.filter(e=>!(e.page===ED.page &&
       (e.multi ? (Math.abs(e.y-P.y0)<1.6 && Math.abs(e.x-P.x0)<1.6)
@@ -3238,18 +3278,24 @@ function wrapPara(text, font, size, maxW, indentCh){
 function edWrapKeepRows(oldText, newText, measure, maxW, indentCh){
   const oldRows=String(oldText||'').split('\n').map(s=>s.replace(/\s+$/,'')).filter(s=>s.length);
   if(oldRows.length<2) return null;
-  const t=String(newText||'');
-  let pos=0; const segs=[];
-  for(const target of oldRows){
-    let i=pos, j=0;
-    while(j<target.length && i<t.length){ if(t[i]===target[j]) j++; i++; }
+  const t=String(newText||'').replace(/\n+/g,'');
+  let pos=0; const spans=[];
+  for(let k=0;k<oldRows.length;k++){
+    const target=oldRows[k];
+    let i=pos, j=0, mStart=-1;
+    while(j<target.length && i<t.length){ if(t[i]===target[j]){ if(mStart<0) mStart=i; j++; } i++; }
     if(j<target.length) return null;
-    segs.push(t.slice(pos, i));
+    /* 行边界处的插入字（如行尾追加的「（验证）」）归上一行，不能挂成独立行
+       （保单标题实测：挂出来会把下一行挤走、居中也丢） */
+    if(mStart>pos && k>0) spans[spans.length-1].extra+=t.slice(pos,mStart);
+    /* 首行：段首插入的字（如「2026年」）并入首行，不能丢 */
+    spans.push({t:t.slice(k===0?pos:(mStart<0?pos:mStart), i), extra:''});
     pos=i;
   }
-  if(pos<t.length) segs[segs.length-1]+=t.slice(pos);
-  for(const s of segs){ const w=(measure(s)||0); if(w>maxW+2) return null; }
-  return segs.map((s,k)=>({t:s, ind:k===0?(indentCh||0):0}));
+  if(pos<t.length) spans.push({t:t.slice(pos), extra:''});   // 末尾追加的整行内容：自成一行，不并进上一行
+  const rows=spans.map((sp,kk)=>({t:sp.t+sp.extra, ind:kk===0?(indentCh||0):0}));
+  for(const s of rows){ const w=(measure(s.t)||0); if(w>maxW+2) return null; }
+  return rows;
 }
 /* 当前用哪种中文字体：用户手动选了就用选的，否则跟随原文
    （先看这一页 PDF 里真实写的字体名，再看 pdf.js 给的 CSS 族名，最后用整份文档主字体） */
@@ -3335,7 +3381,7 @@ function edPaintCanvas(){
          编辑时看到的就是保存后的样子，不再浮白框 */
       const size=Math.max(4, e.size||10);
       const lead=Math.max(size*1.02, e.lead||size*1.55);
-      const rows=e.text?(edWrapKeepRows(e.old, e.text, s=>measureCss(s, famCss(fam), size), e.w, e.indent||0)||wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0)):[];
+      const rows=e.text?(edWrapKeepRows(e.old, e.text, s=>measureCss(s, famCss(fam), size), (e.align==='center'||e.align==='right')?1e9:e.w, e.indent||0)||wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0)):[];
       const hasRf=(e.reflow && e.reflow.below && e.reflow.below.length);
       const delta=hasRf?(rows.length-(e.nOld||1))*lead+(e.gapAfter||0):0;
       const shift=hasRf?0:Math.max(0, Math.min((rows.length-(e.nOld||1))*lead, (e.gapUp||0)*0.95));
@@ -3400,7 +3446,7 @@ function edPaintCanvas(){
     ctx.textBaseline='alphabetic';
     if(e.multi){
       const size=Math.max(4, e.size||10);
-      const pv=e._pv||{rows:e.text?(edWrapKeepRows(e.old, e.text, s=>measureCss(s, famCss(fam), size), e.w, e.indent||0)||wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0)):[], delta:0, yStart:e.y, lead:Math.max(size*1.02, e.lead||size*1.55)};
+      const pv=e._pv||{rows:e.text?(edWrapKeepRows(e.old, e.text, s=>measureCss(s, famCss(fam), size), (e.align==='center'||e.align==='right')?1e9:e.w, e.indent||0)||wrapParaCss(e.text, famCss(fam), size, e.w, e.indent||0)):[], delta:0, yStart:e.y, lead:Math.max(size*1.02, e.lead||size*1.55)};
       ctx.fillStyle=e.color||'#000000';
       ctx.font=(e.bold?'bold ':'')+(e.italic?'italic ':'')+(size*k)+'px '+famCss(fam);
       const mvx=e.mvx||0, mvy=e.mvy||0;
@@ -3409,8 +3455,9 @@ function edPaintCanvas(){
           let xo=0;
           if(e.align==='center'||e.align==='right'){
             const w=measureCss(pv.rows[kk].t, famCss(fam), size);
-            if(e.align==='center') xo=((e.x+((e.xEnd!=null)?e.xEnd:e.x+e.w))/2)-e.x-w/2;
-            else xo=Math.max(0,((e.xEnd!=null)?e.xEnd:e.x+e.w)-e.x-w);
+            const rc=((e.rowC && e.rowC.length===pv.rows.length)?e.rowC[kk]:null);
+            if(e.align==='center') xo=((rc!=null?rc:(e.x+((e.xEnd!=null)?e.xEnd:e.x+e.w))/2))-e.x-w/2;
+            else xo=(rc!=null?rc:((e.xEnd!=null)?e.xEnd:e.x+e.w))-e.x-w;
           }
           ctx.fillText(pv.rows[kk].t, X(e.x+mvx+(pv.rows[kk].ind||0)*size+xo), Y(pv.yStart+mvy-kk*pv.lead));
         }
@@ -3860,11 +3907,16 @@ function edCommitPara(d){
   /* 有效对齐：用户显式选过（faSet）听用户的；否则沿用段落几何判别的对齐 */
   const effAlign=d.dataset.faSet==='1' ? (d.dataset.fa||'left') : ((P.align||d.dataset.fa||'left'));
   const rec={ page:ED.page, multi:true, x:P.x0, xEnd:P.x1, y:P.y0, yEnd:P.yEnd, w:edAvailW(P), h:P.size,
-              nOld:P.n, lead:P.lead, indent:(effAlign==='center'?0:P.indent), old:P.text, text, color, size:P.size, inkH:P.lines[0].inkH||null,
+              nOld:P.n, lead:P.lead, indent:((effAlign==='center'||effAlign==='right')?0:P.indent), old:P.text, text, color, size:P.size, inkH:P.lines[0].inkH||null,
               fam:edFam(P.lines[0]), bg:P.lines[0].ocr?edBgSample(edBox(P.lines[0])):null,
               gapUp:edGapUp(P), ocr:!!P.lines[0].ocr, autoFam:true, autoSrc:P.lines[0].srcFont||P.lines[0].fam||null, autoSize:false,
               bold:(!!(P.lines[0]&&P.lines[0].bold))||d.dataset.fb==='1', italic:d.dataset.fi==='1',
               align:(effAlign!=='left')?effAlign:null };
+  if(rec.align==='center'||rec.align==='right'){
+    rec.rowC=P.lines.map(l=>(rec.align==='center')
+      ? (l.x+(((l.x2!=null)?l.x2:(l.x+(l.w||0)))-l.x)/2)
+      : ((l.x2!=null)?l.x2:(l.x+(l.w||0))));
+  }
   const lhv=parseFloat(d.dataset.flh);
   if(lhv>0){ rec.lh=lhv; rec.lead=Math.round(rec.size*lhv*10)/10; }
   const gav=parseFloat(d.dataset.fga);
@@ -4335,7 +4387,7 @@ async function edSaveEdits(){
     const font=fontByFam[e.fam||regionFam]; if(!font) continue;
     const size=Math.max(4, e.size||10);
     const lead=Math.max(size*1.02, e.lead||size*1.55);
-    const rows=e.text?(edWrapKeepRows(e.old, e.text, s=>{ try{ return font.widthOfTextAtSize(s, size); }catch(err){ return s.length*size; } }, e.w, e.indent||0)||wrapPara(e.text, font, size, e.w, e.indent||0)):[];
+    const rows=e.text?(edWrapKeepRows(e.old, e.text, s=>{ try{ return font.widthOfTextAtSize(s, size); }catch(err){ return s.length*size; } }, (e.align==='center'||e.align==='right')?1e9:e.w, e.indent||0)||wrapPara(e.text, font, size, e.w, e.indent||0)):[];
     const grow=(rows.length-(e.nOld||1))*lead + (e.gapAfter||0);
     layout.set(e, { rows, shiftUp:0, delta:grow });
   }
@@ -4350,7 +4402,7 @@ async function edSaveEdits(){
       const lead=Math.max(size*1.02, e.lead||size*1.55);
       const bgc=e.bg?hex2rgb(e.bg):white;
       const lay=layout.get(e);
-      const rows=lay?lay.rows:(e.text?(edWrapKeepRows(e.old, e.text, s=>{ try{ return font.widthOfTextAtSize(s, size); }catch(err){ return s.length*size; } }, e.w, e.indent||0)||wrapPara(e.text, font, size, e.w, e.indent||0)):[]);
+      const rows=lay?lay.rows:(e.text?(edWrapKeepRows(e.old, e.text, s=>{ try{ return font.widthOfTextAtSize(s, size); }catch(err){ return s.length*size; } }, (e.align==='center'||e.align==='right')?1e9:e.w, e.indent||0)||wrapPara(e.text, font, size, e.w, e.indent||0)):[]);
       /* 变长了先往上长（借段前空白），上面没地方才往下压；挂了重排记录则下方让位 */
       const shift=lay?0:Math.max(0, Math.min((rows.length-(e.nOld||1))*lead, (e.gapUp||0)*0.95));
       const yStart=e.y+shift;
@@ -4391,8 +4443,11 @@ async function edSaveEdits(){
           let xo=0;
           if(e.align==='center'||e.align==='right'){
             let w=0; try{ w=font.widthOfTextAtSize(rows[k].t, size); }catch(err){ w=rows[k].t.length*size; }
-            if(e.align==='center') xo=((e.x+spanR)/2)-e.x-w/2;   // 允许负值：新行比原段宽时左右对称外溢
-            else xo=Math.max(0,spanR-e.x-w);
+            /* 行数与原段一致时用每行自己的锚点（居中段各行中心可能差几 pt，逐行保真）；
+               行数变了才退回整段中心/右缘锚定 */
+            const rc=((e.rowC && e.rowC.length===rows.length)?e.rowC[k]:null);
+            if(e.align==='center') xo=((rc!=null?rc:(e.x+spanR)/2))-e.x-w/2;   // 允许负值：新行比原段宽时对称外溢
+            else xo=(rc!=null?rc:spanR)-e.x-w;                                  // 右对齐：右缘锁死，超宽往左溢
           }
           drawStyledText(page, rows[k].t, {x:e.x+mvx+(rows[k].ind||0)*size+xo, y:yStart+mvy-k*lead,
                                            size, font, color:col, bold:e.bold, italic:e.italic});
