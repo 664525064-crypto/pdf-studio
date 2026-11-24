@@ -70,7 +70,7 @@ const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString('base64');
 
   // 0. 页面健康
   const health = await evalJS(send, `({title:document.title, hasPS:!!window.__PS, hasLibs:!!(window.pdfjsLib&&window.PDFLib&&window.fontkit), tools:document.querySelectorAll('.tbtn').length})`);
-  check('页面加载', health.title.includes('PDF') && health.hasPS && health.hasLibs && health.tools === 26, JSON.stringify(health));
+  check('页面加载', health.title.includes('PDF') && health.hasPS && health.hasLibs && health.tools === 31, JSON.stringify(health));
 
   // 0.1 侧栏可用性（曾在 780 高窗口里滚不到底部，PDF 转 Word/Excel/PPT 找不到）
   const sideUi = await evalJS(send, `(()=>{
@@ -86,7 +86,7 @@ const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString('base64');
     return {n, back:document.querySelectorAll('.tbtn').length, overflow:getComputedStyle(box).overflowY,
             scrollable:box.scrollHeight>box.clientHeight, f1, f2, chips};
   })()`);
-  check('侧栏·可滚动', sideUi.n === 26 && sideUi.back === 26 && sideUi.overflow === 'auto' && sideUi.scrollable, JSON.stringify({n: sideUi.n, ov: sideUi.overflow, sc: sideUi.scrollable}));
+  check('侧栏·可滚动', sideUi.n === 31 && sideUi.back === 31 && sideUi.overflow === 'auto' && sideUi.scrollable, JSON.stringify({n: sideUi.n, ov: sideUi.overflow, sc: sideUi.scrollable}));
   check('侧栏·搜索过滤', sideUi.f1.length === 1 && /Word/.test(sideUi.f1[0]) && sideUi.f2.length === 1 && /Excel/.test(sideUi.f2[0]), JSON.stringify([sideUi.f1, sideUi.f2]));
   check('首屏快捷入口', sideUi.chips.length >= 5 && sideUi.chips.some(t=>/Word/.test(t)) && sideUi.chips.some(t=>/Excel/.test(t)) && sideUi.chips.some(t=>/PPT/.test(t)), JSON.stringify(sideUi.chips));
 
@@ -1055,6 +1055,60 @@ const b64 = (f) => fs.readFileSync(path.join(__dirname, f)).toString('base64');
   const sigDate = await evalJS(send, `(${cntBoxFn})(__PS_SAVED__[0].bytes)`, 60000);
   check('手写签名·附加日期', s.length===1 && sigDate && sigOrig && sigDate.below > sigOrig.below + 5, 'orig=' + JSON.stringify(sigOrig) + ' dated=' + JSON.stringify(sigDate));
   await evalJS(send, `document.getElementById('f_sdate').checked=false;`, 20000);
+
+  /* ===== Stirling-PDF 借鉴：裁剪 / 展平 / 提取图片 / 元数据 / 比较 ===== */
+
+  // 裁剪（边距模式）：裁完用 pdf.js 重载，可视页面应比原页小
+  await evalJS(send, `(async()=>{ await __PS.testOpenDoc('test-a.pdf','${bA}'); __PS.selectTool('crop'); __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name,size:f.bytes.length,head:String.fromCharCode(...f.bytes.slice(0,5))}))`);
+  check('页面裁剪·边距模式', s.length===1 && /_裁剪\.pdf$/.test(s[0].n) && s[0].head==='%PDF-', JSON.stringify(s));
+
+  // 裁剪（自动去白边）：保存成功即可，宽度断言依赖语料内容
+  await evalJS(send, `(async()=>{ __PS.selectTool('crop'); document.getElementById('f_cm').value='content'; document.getElementById('f_cm').dispatchEvent(new Event('change')); __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name,size:f.bytes.length}))`);
+  check('页面裁剪·自动去白边', s.length===1 && /_裁剪\.pdf$/.test(s[0].n), JSON.stringify(s));
+
+  // 展平：现造一个带文本框的表单 PDF → 展平后字段应为 0
+  const bForm = await evalJS(send, `(async()=>{
+    const doc=await PDFLib.PDFDocument.load(Uint8Array.from(atob('${bA}'),c=>c.charCodeAt(0)));
+    doc.getForm().createTextField('name'); doc.getForm().getTextField('name').setText('张三');
+    const b=await doc.save(); let s=''; for(const c of b) s+=String.fromCharCode(c);
+    return btoa(s);
+  })()`, 60000);
+  await evalJS(send, `(async()=>{ await __PS.testOpenDoc('test-form.pdf','${bForm}'); __PS.selectTool('flatten'); __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name,size:f.bytes.length}))`);
+  const flatN = await evalJS(send, `(async()=>{
+    const b=__PS_SAVED__[0].bytes;
+    const doc=await PDFLib.PDFDocument.load(b);
+    try { return { fields: doc.getForm().getFields().length }; } catch(e){ return { fields: -1 }; }
+  })()`, 60000);
+  check('展平·表单字段拍平', s.length===1 && /_展平\.pdf$/.test(s[0].n) && flatN && flatN.fields===0, JSON.stringify(s)+' fields='+JSON.stringify(flatN));
+
+  // 提取图片：现造一个嵌 test.png 的 PDF → 至少提取 1 张 PNG
+  const bImgPdf = await evalJS(send, `(async()=>{
+    const doc=await PDFLib.PDFDocument.create();
+    const img=await doc.embedPng(Uint8Array.from(atob('${bPng}'),c=>c.charCodeAt(0)));
+    const p=doc.addPage([600,800]); p.drawImage(img,{x:60,y:300,width:img.width,height:img.height});
+    const b=await doc.save(); let s=''; for(const c of b) s+=String.fromCharCode(c);
+    return btoa(s);
+  })()`, 60000);
+  await evalJS(send, `(async()=>{ await __PS.testOpenDoc('test-img.pdf','${bImgPdf}'); __PS.selectTool('extimg'); document.getElementById('f_minsz').value='10'; __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name, png:f.bytes[0]===0x89&&f.bytes[1]===0x50, size:f.bytes.length}))`);
+  check('提取图片·嵌入图导出 PNG', s.length>=1 && s.every(x=>x.png), JSON.stringify(s));
+
+  // 文档信息 / 重命名
+  await evalJS(send, `(async()=>{ await __PS.testOpenDoc('test-a.pdf','${bA}'); __PS.selectTool('meta'); document.getElementById('f_title').value='测试标题文档'; document.getElementById('f_rename').value='title'; __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name,size:f.bytes.length}))`);
+  const metaT = await evalJS(send, `(async()=>{
+    const b=__PS_SAVED__[0].bytes;
+    return (await PDFLib.PDFDocument.load(b)).getTitle();
+  })()`, 60000);
+  check('文档信息·改标题并重命名', s.length===1 && s[0].n==='测试标题文档.pdf' && metaT==='测试标题文档', JSON.stringify(s)+' title='+metaT);
+
+  // PDF 比较：文件列表前两个 PDF → HTML 报告
+  await evalJS(send, `(async()=>{ st.fileList.length=0; __PS.selectTool('compare'); await __PS.testAddFile('test-a.pdf','${bA}'); await __PS.testAddFile('test-b.pdf','${bB}'); __PS_SAVED__.length=0; await __PS.testRun(); })()`, 60000);
+  s = await evalJS(send, `__PS_SAVED__.map(f=>({n:f.name, html:f.bytes.length>200, hasSum:new TextDecoder().decode(f.bytes.slice(0,4000)).includes('PDF 比较报告')}))`);
+  check('PDF 比较·HTML 报告', s.length===1 && s[0].html && s[0].hasSum, JSON.stringify(s));
 
   console.log(`\n==== 结果: ${results.length - fails}/${results.length} 通过 ====`);
 

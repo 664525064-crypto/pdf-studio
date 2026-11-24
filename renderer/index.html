@@ -441,6 +441,16 @@ const TOOLS = [
   {id:'rotate',  g:'页面组织', name:'旋转页面',  needDoc:true, grid:true,
    desc:'把勾选的页面旋转指定角度。',
    opts:[{k:'angle', l:'旋转角度（顺时针）', t:'select', o:[['90','90°'],['180','180°'],['270','270°']], v:'90'}]},
+  {id:'crop',    g:'页面组织', name:'页面裁剪',  needDoc:true, grid:true,
+   desc:'裁剪勾选页面：按四边边距裁，或自动去白边（以文字和图片的实际范围为准）。',
+   opts:[
+     {k:'cm', l:'裁剪方式', t:'select', o:[['margin','按四边边距（pt）'],['content','自动去白边']], v:'margin'},
+     {k:'mt', l:'顶部边距 pt', t:'number', v:20, when:v=>v.cm==='margin'},
+     {k:'mb', l:'底部边距 pt', t:'number', v:20, when:v=>v.cm==='margin'},
+     {k:'ml', l:'左侧边距 pt', t:'number', v:20, when:v=>v.cm==='margin'},
+     {k:'mr', l:'右侧边距 pt', t:'number', v:20, when:v=>v.cm==='margin'},
+     {k:'cpad', l:'内容四周保留 pt', t:'number', v:10, when:v=>v.cm==='content'}
+   ]},
   {id:'pagenum', g:'编辑', name:'添加页码',  needDoc:true, grid:true,
    desc:'给勾选的页面加页码，支持中文格式（内嵌微软雅黑）。',
    opts:[
@@ -490,6 +500,15 @@ const TOOLS = [
      {k:'iw', l:'签名宽度占页面比例 %', t:'number', v:18},
      {k:'ix', l:'水平位置 %', t:'number', v:60},
      {k:'iy', l:'垂直位置 %', t:'number', v:78}
+   ]},
+  {id:'meta',    g:'编辑', name:'文档信息 / 重命名', needDoc:true, grid:false,
+   desc:'查看并修改标题 / 作者 / 主题 / 关键词；可按文档标题或正文第一行自动重命名文件。',
+   opts:[
+     {k:'title', l:'标题（留空保持不变）', t:'text', v:''},
+     {k:'author', l:'作者（留空保持不变）', t:'text', v:''},
+     {k:'subject', l:'主题（留空保持不变）', t:'text', v:''},
+     {k:'kw2', l:'关键词（逗号分隔，留空不变）', t:'text', v:''},
+     {k:'rename', l:'自动重命名文件', t:'select', o:[['no','不重命名'],['title','按文档标题'],['firstline','按正文第一行']], v:'no'}
    ]},
   {id:'edittext', g:'编辑', name:'编辑 PDF 文字', needDoc:true, grid:true, openEditor:true,
    desc:'进入页面编辑界面：点页面上任意一行文字就能改内容 / 删除 / 改颜色字号，改完保存为新 PDF。文字版 PDF 可用（扫描件没有文字层，请用「编辑 PDF 图片」框选处理）。',
@@ -543,6 +562,9 @@ const TOOLS = [
   {id:'repair',  g:'转换', name:'修复 PDF',  needDoc:true, grid:false,
    desc:'重建文件内部结构（交叉引用表），修复打不开 / 下载中断损坏的 PDF。',
    opts:[]},
+  {id:'extimg',  g:'转换', name:'提取图片',  needDoc:true, grid:true,
+   desc:'把勾选页面里嵌入的照片 / 插图批量提取为 PNG 文件（可过滤小图标）。',
+   opts:[{k:'minsz', l:'最小边长 px（小于此尺寸的跳过）', t:'number', v:80}]},
   {id:'highlight', g:'注释', name:'关键词高亮', needDoc:true, grid:true,
    desc:'按关键词自动定位并标注（荧光笔高亮 / 下划线），对勾选页面全文生效。',
    opts:[
@@ -565,7 +587,13 @@ const TOOLS = [
    opts:[{k:'dp', l:'打开密码', t:'password', v:''}]},
   {id:'redact',  g:'保护', name:'敏感信息打码', needDoc:true, grid:true,
    desc:'按关键词自动定位敏感信息（手机号 / 姓名 / 卡号等），黑色矩形永久涂黑后导出。',
-   opts:[{k:'rkws', l:'敏感关键词（逗号分隔）', t:'text', v:'', ph:'如：13800138000,张三,411522…'}]}
+   opts:[{k:'rkws', l:'敏感关键词（逗号分隔）', t:'text', v:'', ph:'如：13800138000,张三,411522…'}]},
+  {id:'flatten', g:'保护', name:'展平 PDF',   needDoc:true, grid:false,
+   desc:'把表单字段和批注拍平成静态内容：填过的表单、盖章批注不可再编辑（锁定文档）。',
+   opts:[{k:'kannots', l:'保留链接等可点击批注', t:'check', v:false}]},
+  {id:'compare', g:'工具', name:'PDF 比较',   needDoc:false, multi:true,
+   desc:'对比文件列表里的前两个 PDF：逐页比对文字差异，生成红绿对照的 HTML 报告。',
+   opts:[]}
 ];
 
 /* ============ 侧栏 ============ */
@@ -580,6 +608,9 @@ const ALIAS = {
   p2html:'html 网页', p2epub:'epub 电子书 kindle', compress:'压缩 变小 瘦身',
   repair:'修复 损坏 打不开', encrypt:'加密 密码 保护', decrypt:'解密 密码 移除',
   redact:'打码 涂黑 脱敏 敏感', highlight:'高亮 标注 荧光笔',
+  crop:'裁剪 去白边 修剪 白边 切边 切边距', flatten:'展平 拍平 表单 锁定 不可编辑 定稿',
+  extimg:'提取图片 导出图片 照片 插图 抠图 图片导出', meta:'信息 元数据 标题 作者 重命名 属性 改名',
+  compare:'比较 对比 diff 差异 找不同 比对',
   merge:'合并 拼接 组合', split:'拆分 分割 分页', extract:'提取 抽取 选中',
   delete:'删除 去掉 移除', rotate:'旋转 转向 横版 竖版', pagenum:'页码 编号'
 };
@@ -643,7 +674,12 @@ function icon(id){
     p2docx:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8 12h8M8 16h5"/>',
     p2xlsx:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
     p2pptx:'<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4M8 20h8"/><path d="M7 12l3-4 3 3 2-2 2 3"/>',
-    repair:'<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/>'
+    repair:'<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3z"/>',
+    crop:'<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
+    flatten:'<path d="M12 3 4 7l8 4 8-4-8-4z"/><path d="m4 13 8 4 8-4"/>',
+    extimg:'<rect x="3" y="5" width="13" height="11" rx="2"/><path d="M7 20h11a3 3 0 0 0 3-3V9"/><circle cx="7.5" cy="9.5" r="1.4"/><path d="m5 14 3-3 3 3 2-2 3 3"/>',
+    meta:'<circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/>',
+    compare:'<rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="4" width="8" height="16" rx="1"/><path d="M6.5 12h1M16.5 12h1"/>'
   };
   return m[id]||'';
 }
@@ -1114,7 +1150,7 @@ async function run(){
   }
   st.busy=true; $('runbtn').disabled=true; setStatus('处理中…');
   try{
-    await ({merge,split,extract,delete:del,rotate,pagenum,wm,addtext,addimg,sign,edittext,editimg,highlight,p2i,i2p,text,p2html,p2epub,p2docx,p2xlsx,p2pptx,compress,repair,encrypt,decrypt,redact})[t.id](v);
+    await ({merge,split,extract,delete:del,rotate,crop,pagenum,wm,addtext,addimg,sign,meta,edittext,editimg,highlight,p2i,i2p,text,p2html,p2epub,p2docx,p2xlsx,p2pptx,compress,repair,extimg,encrypt,decrypt,redact,flatten,compare})[t.id](v);
   }catch(e){
     if(e !== HEALED_RESTART){ console.error(e); setStatus('出错：'+(e.message||e),'err'); }
   }
@@ -1645,6 +1681,249 @@ async function redact(v){
   const bytes=await doc.save({useObjectStreams:true});
   await saveOne(st.name.replace(/\.pdf$/i,'')+'_打码.pdf', bytes);
   setStatus(`✅ 已涂黑 ${total} 处敏感信息并保存`,'ok');
+}
+
+/* ---- 页面裁剪：四边边距 / 自动去白边 ---- */
+async function contentBBox(jsPage){
+  const vp=jsPage.getViewport({scale:1});
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  const add=(x,y,w,h)=>{ if(w<=0||h<=0) return; x0=Math.min(x0,x); y0=Math.min(y0,y); x1=Math.max(x1,x+w); y1=Math.max(y1,y+h); };
+  const tc=await jsPage.getTextContent();
+  for(const it of tc.items){
+    if(!it.str || !it.str.trim()) continue;
+    const m=it.transform; const fs=Math.hypot(m[2],m[3])||10;
+    const px=m[4], py=vp.height-m[5]; // pdf.js 顶左原点
+    add(px, py-fs, it.width||it.str.length*fs, fs*1.25);
+  }
+  try{
+    const ops=await jsPage.getOperatorList();
+    const OPSv=pdfjsLib.OPS;
+    for(let i=0;i<ops.fnArray.length;i++){
+      if(ops.fnArray[i]===OPSv.paintImageXObject||ops.fnArray[i]===OPSv.paintJpegXObject||ops.fnArray[i]===OPSv.paintImageXObjectRepeat){
+        const m=ops.argsArray[i][ops.fnArray[i]===OPSv.paintImageXObjectRepeat?2:0];
+        if(m && m.length===6){
+          const w=m[0], h=m[1];
+          const px=m[4], py=vp.height-(m[5]+h*Math.abs(m[3]||1));
+          add(px, py, w*Math.abs(m[0]||1), h*Math.abs(m[3]||1));
+        }
+      }
+    }
+  }catch(e){ /* 无图片不阻塞 */ }
+  if(x0===Infinity) return null;
+  return {x:Math.max(0,x0), y:Math.max(0,y0), w:Math.min(vp.width,x1)-Math.max(0,x0), h:Math.min(vp.height,y1)-Math.max(0,y0), W:vp.width, H:vp.height};
+}
+async function crop(v){
+  if(!st.bytes){ setStatus('请先打开 PDF','err'); return; }
+  const sel=selSorted();
+  if(!sel.length){ setStatus('请先勾选页面','err'); return; }
+  const doc=await loadPdf(st.bytes);
+  const pages=doc.getPages();
+  let n=0;
+  for(let k=0;k<sel.length;k++){
+    setProg(k/sel.length);
+    const p=pages[sel[k]];
+    const {width,height}=p.getSize();
+    let cx0,cy0,cx1,cy1;
+    if(v.cm==='content'){
+      const b=await contentBBox(await st.jsDoc.getPage(sel[k]+1));
+      if(!b){ continue; }
+      const pad=Math.max(0,+v.cpad||0);
+      // pdf.js 顶左原点 → pdf-lib 左下原点
+      cx0=Math.max(0, b.x-pad); cx1=Math.min(b.W, b.x+b.w+pad);
+      cy0=Math.max(0, b.H-(b.y+b.h)-pad); cy1=Math.min(b.H, b.H-b.y+pad);
+    }else{
+      const mt=+v.mt||0, mb=+v.mb||0, ml=+v.ml||0, mr=+v.mr||0;
+      cx0=ml; cy0=mb; cx1=width-mr; cy1=height-mt;
+    }
+    if(cx1-cx0<20||cy1-cy0<20) throw new Error(`第 ${sel[k]+1} 页裁剪后过小，请调小边距`);
+    p.setCropBox(cx0, cy0, cx1-cx0, cy1-cy0);
+    n++;
+  }
+  if(!n){ setStatus('页面没有可定位的内容，无法自动去白边','err'); return; }
+  const bytes=await doc.save({useObjectStreams:true});
+  await saveOne(st.name.replace(/\.pdf$/i,'')+'_裁剪.pdf', bytes);
+  setStatus(`✅ 已裁剪 ${n} 页并保存`,'ok');
+}
+
+/* ---- 展平：表单字段拍平 + 批注移除 ---- */
+async function flatten(v){
+  if(!st.bytes){ setStatus('请先打开 PDF','err'); return; }
+  const doc=await loadPdf(st.bytes);
+  let hasForm=false;
+  try{ doc.getForm().flatten(); hasForm=true; }catch(e){ /* 无表单字段 */ }
+  const PDFName=PDF_().PDFName;
+  let annots=0;
+  for(const p of doc.getPages()){
+    const arr=p.node.Annots();
+    if(!arr || !arr.size) continue;
+    const keep=[];
+    for(let i=0;i<arr.size();i++){
+      const obj=doc.context.lookup(arr.get(i));
+      const sub=obj && obj.get ? obj.get(PDFName.of('Subtype')) : null;
+      const subS=sub && sub.asString ? sub.asString() : '';
+      if(v.kannots && subS==='/Link') keep.push(arr.get(i)); else annots++;
+    }
+    if(keep.length) p.node.set(PDFName.of('Annots'), doc.context.obj(keep));
+    else p.node.delete(PDFName.of('Annots'));
+  }
+  if(!hasForm && !annots){ setStatus('这份 PDF 没有表单字段和批注，无需展平','err'); return; }
+  const bytes=await doc.save({useObjectStreams:true});
+  await saveOne(st.name.replace(/\.pdf$/i,'')+'_展平.pdf', bytes);
+  setStatus(`✅ 展平完成：${hasForm?'表单已拍平':''}${annots?'，移除批注 '+annots+' 个':''}`,'ok');
+}
+
+/* ---- 提取图片：pdf.js 解码位图 → PNG ---- */
+async function extimg(v){
+  if(!st.bytes){ setStatus('请先打开 PDF','err'); return; }
+  const sel=selSorted();
+  if(!sel.length){ setStatus('请先勾选页面','err'); return; }
+  const minsz=Math.max(1,+v.minsz||1);
+  const base=st.name.replace(/\.pdf$/i,'');
+  const out=[]; let seen=new Set();
+  for(let k=0;k<sel.length;k++){
+    setProg(k/sel.length);
+    const page=await st.jsDoc.getPage(sel[k]+1);
+    const ops=await page.getOperatorList();
+    const OPSv=pdfjsLib.OPS;
+    for(let i=0;i<ops.fnArray.length;i++){
+      const fn=ops.fnArray[i];
+      let img=null;
+      if(fn===OPSv.paintImageXObject||fn===OPSv.paintJpegXObject){
+        const name=ops.argsArray[i][0];
+        const key=sel[k]+':'+name;
+        if(seen.has(key)) continue; seen.add(key);
+        img=await new Promise(res=>{ try{ page.objs.get(name, res); }catch(e){ res(null); } });
+      }else if(fn===OPSv.paintInlineImageXObject){
+        img=ops.argsArray[i][0];
+      }
+      if(!img || !img.width || !img.height || img.width<minsz || img.height<minsz) continue;
+      const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
+      const ctx=cv.getContext('2d'); const id=ctx.createImageData(img.width,img.height);
+      const d=img.data;
+      if(img.kind===3){ id.data.set(d); }
+      else if(img.kind===2){ for(let j=0,p=0;j<d.length;j+=3,p+=4){ id.data[p]=d[j]; id.data[p+1]=d[j+1]; id.data[p+2]=d[j+2]; id.data[p+3]=255; } }
+      else if(img.kind===1){ // 1bpp 灰度打包
+        const inv=img.decode && img.decode[0]===1;
+        for(let y=0;y<img.height;y++) for(let x=0;x<img.width;x++){
+          const bit=(d[(x>>3)+y*(img.width>>3)]>>(7-(x&7)))&1;
+          const g=inv?(bit?0:255):(bit?255:0);
+          const p=(y*img.width+x)*4; id.data[p]=id.data[p+1]=id.data[p+2]=g; id.data[p+3]=255;
+        }
+      } else continue;
+      ctx.putImageData(id,0,0);
+      const b64=cv.toDataURL('image/png').split(',')[1];
+      out.push({name:`${base}_第${sel[k]+1}页_${out.length+1}.png`, bytes:Uint8Array.from(atob(b64),c=>c.charCodeAt(0))});
+    }
+  }
+  if(!out.length){ setStatus('勾选页面里没有找到符合条件的图片（可调小「最小边长」）','err'); return; }
+  await saveMany(out);
+  setStatus(`✅ 已提取 ${out.length} 张图片并保存`,'ok');
+}
+
+/* ---- 文档信息 / 重命名 ---- */
+async function meta(v){
+  if(!st.bytes){ setStatus('请先打开 PDF','err'); return; }
+  const doc=await loadPdf(st.bytes);
+  const cur={ 标题:doc.getTitle()||'（空）', 作者:doc.getAuthor()||'（空）', 主题:doc.getSubject()||'（空）', 关键词:doc.getKeywords()||'（空）' };
+  window.__PS_LAST_META__=cur;
+  let changed=0;
+  if(v.title.trim()){ doc.setTitle(v.title.trim()); changed++; }
+  if(v.author.trim()){ doc.setAuthor(v.author.trim()); changed++; }
+  if(v.subject.trim()){ doc.setSubject(v.subject.trim()); changed++; }
+  if(v.kw2.trim()){ doc.setKeywords(v.kw2.split(/[,，]/).map(s=>s.trim()).filter(Boolean)); changed++; }
+  if(!changed && v.rename==='no'){
+    setStatus('当前信息：标题「'+cur.标题+'」 作者「'+cur.作者+'」 主题「'+cur.主题+'」（填写后保存即可修改）');
+    return;
+  }
+  if(changed) doc.setModificationDate(new Date());
+  let name=st.name;
+  if(v.rename!=='no'){
+    let base=v.rename==='title' ? (doc.getTitle()||'') : '';
+    if(v.rename==='firstline'){
+      const page=await st.jsDoc.getPage(1);
+      const r=await linesForPage(page, 'text');
+      for(const L of (r.lines||[])){ if((L.text||'').trim().length>=4){ base=L.text.trim(); break; } }
+    }
+    base=base.replace(/[\\/:*?"<>|\r\n\t]+/g,' ').trim().slice(0,60);
+    if(!base){ setStatus('自动重命名失败：没有取到可用文字，请改用其他方式','err'); return; }
+    name=base+'.pdf';
+  }
+  const bytes=await doc.save({useObjectStreams:true});
+  await saveOne(name, bytes);
+  setStatus(`✅ 文档信息已更新${v.rename!=='no'?'，已重命名为「'+name+'」':''}`,'ok');
+}
+
+/* ---- PDF 比较：文件列表前两个，逐页文字行 diff，输出 HTML 报告 ---- */
+function lcsDiff(a,b){
+  const n=a.length,m=b.length;
+  const dp=Array.from({length:n+1},()=>new Uint16Array(m+1));
+  for(let i=n-1;i>=0;i--) for(let j=m-1;j>=0;j--)
+    dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const out=[];
+  let i=0,j=0;
+  while(i<n&&j<m){
+    if(a[i]===b[j]){ out.push({t:'=',s:a[i]}); i++; j++; }
+    else if(dp[i+1][j]>=dp[i][j+1]){ out.push({t:'-',s:a[i]}); i++; }
+    else { out.push({t:'+',s:b[j]}); j++; }
+  }
+  while(i<n) out.push({t:'-',s:a[i++]});
+  while(j<m) out.push({t:'+',s:b[j++]});
+  return out;
+}
+async function compare(v){
+  const pdfs=st.fileList.filter(f=>/\.pdf$/i.test(f.name));
+  if(pdfs.length<2){ setStatus('请先在首页文件列表添加 2 个 PDF（按添加顺序取前两个）','err'); return; }
+  const [fa,fb]=pdfs;
+  setStatus('正在解析两个文档…');
+  const pagesOf=async f=>{
+    const js=await pdfjsLib.getDocument({data:f.bytes.slice(), cMapUrl:'vendor/cmaps/', cMapPacked:true, standardFontDataUrl:'vendor/standard_fonts/'}).promise;
+    const arr=[];
+    for(let p=1;p<=js.numPages;p++){
+      const page=await js.getPage(p);
+      const r=await linesForPage(page, 'auto', m=>{
+        if(m.status==='recognizing text') setStatus(`OCR 识别 ${f.name} 第 ${p} 页… ${Math.round((m.progress||0)*100)}%`);
+      });
+      arr.push((r.lines||[]).map(L=>(L.text||'').trimEnd()).filter(s=>s.length));
+    }
+    return arr;
+  };
+  const A=await pagesOf(fa), B=await pagesOf(fb);
+  const nP=Math.max(A.length,B.length);
+  const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let diffPages=0, addL=0, delL=0;
+  let body='';
+  for(let p=0;p<nP;p++){
+    const d=lcsDiff(A[p]||[],B[p]||[]);
+    const has=d.some(x=>x.t!=='=');
+    if(has) diffPages++;
+    body+=`<h2>第 ${p+1} 页${has?' <span class="tag">有差异</span>':''}</h2>`;
+    if(!(A[p]||[]).length&&!(B[p]||[]).length){ body+='<p class="dim">（两版均无文字）</p>'; continue; }
+    body+='<div class="diff">';
+    for(const x of d){
+      if(x.t==='=') body+=`<div class="ln eq">  ${esc(x.s)}</div>`;
+      else if(x.t==='+'){ addL++; body+=`<div class="ln add">+ ${esc(x.s)}</div>`; }
+      else { delL++; body+=`<div class="ln del">- ${esc(x.s)}</div>`; }
+    }
+    body+='</div>';
+  }
+  const html=`<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>PDF 比较报告</title><style>
+body{font-family:"Microsoft YaHei",sans-serif;max-width:960px;margin:24px auto;padding:0 16px;color:#222}
+h1{font-size:20px} .meta{color:#666;font-size:13px;margin-bottom:8px}
+.tag{background:#ffe08a;border-radius:4px;padding:1px 6px;font-size:12px}
+h2{font-size:15px;border-bottom:1px solid #eee;padding-bottom:4px;margin-top:28px}
+.dim{color:#999;font-size:12px}
+.diff{background:#fafafa;border:1px solid #eee;border-radius:6px;padding:6px 0;font:12px/1.7 Consolas,monospace}
+.ln{padding:0 10px;white-space:pre-wrap;word-break:break-all}
+.add{background:#e6ffec;color:#116329}.del{background:#ffebe9;color:#82071e}
+.sum{background:#f0f6ff;border:1px solid #d0e0ff;border-radius:6px;padding:10px 14px;font-size:13px}
+</style></head><body>
+<h1>PDF 比较报告</h1>
+<div class="meta">A = ${esc(fa.name)}（${A.length} 页）<br>B = ${esc(fb.name)}（${B.length} 页）</div>
+<div class="sum">共 ${nP} 页，<b>${diffPages}</b> 页有差异；新增行 <b style="color:#116329">+${addL}</b>，删除行 <b style="color:#82071e">-${delL}</b></div>
+${body}
+</body></html>`;
+  await saveOne('比较报告_'+Date.now()%100000+'.html', new TextEncoder().encode(html));
+  setStatus(`✅ 比较完成：共 ${nP} 页，${diffPages} 页有差异（新增 ${addL} 行 / 删除 ${delL} 行），报告已保存`,'ok');
 }
 
 /* ---- 页面文字提取（文本提取 / HTML / EPUB 共用） ---- */
